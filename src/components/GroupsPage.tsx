@@ -314,7 +314,7 @@ export function GroupsPage() {
       const friendMessage: ChatMessage = {
         id: Date.now().toString() + '_friend',
         userId: 'system',
-        username: 'LiberTalk',
+        username: 'Libekoo',
         message: 'Demandes d\'ami envoyées aux membres actifs',
         timestamp: new Date(),
         isOwn: false,
