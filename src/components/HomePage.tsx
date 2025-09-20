@@ -127,7 +127,7 @@ export function HomePage() {
         {/* Header */}
         <div className="flex-shrink-0 text-center pt-16 pb-8 px-4">
           <h1 className="text-5xl md:text-7xl font-bold bg-gradient-to-r from-cyan-400 via-blue-500 to-purple-600 bg-clip-text text-transparent mb-4 animate-fade-in">
-            LiberTalk
+            Libekoo
           </h1>
           <p className="text-xl md:text-3xl text-white font-light leading-tight animate-fade-in">
             Connectez-vous avec des personnes

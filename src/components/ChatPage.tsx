@@ -201,7 +201,7 @@ export function ChatPage() {
           const welcomeMessage: ChatMessage = {
             id: Date.now().toString(),
             userId: 'system',
-            username: 'LiberTalk',
+            username: 'Libekoo',
             message: `✅ Connecté avec ${match.user1_id === userId ? match.user2_pseudo : match.user1_pseudo}`,
             timestamp: new Date(),
             isOwn: false,
@@ -358,7 +358,7 @@ export function ChatPage() {
       const friendMessage: ChatMessage = {
         id: Date.now().toString() + '_friend',
         userId: 'system',
-        username: 'LiberTalk',
+        username: 'Libekoo',
         message: '✅ Demande d\'ami envoyée',
         timestamp: new Date(),
         isOwn: false,
