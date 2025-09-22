@@ -2,9 +2,6 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Send, Users, MapPin, ArrowLeft, Plus, Hash, UserPlus, X } from 'lucide-react';
 import { useApp } from '../context/AppContext';
 import { ChatMessage } from '../types';
-import SupabaseService from '../services/SupabaseService';
-import { supabase } from '../lib/supabase';
-import type { Database } from '../lib/supabase';
 
 type GroupRoom = Database['public']['Tables']['groups']['Row'];
 
@@ -619,3 +616,4 @@ export function GroupsPage() {
     </div>
   );
 }
+

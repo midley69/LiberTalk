@@ -4,6 +4,7 @@ export interface User {
   isAnonymous: boolean;
   location?: string;
   avatar?: string;
+  createdAt?: Date;
 }
 
 export interface ChatMessage {
@@ -21,12 +22,14 @@ export interface ChatRoom {
   name?: string;
   participants: User[];
   messages: ChatMessage[];
+  createdAt?: Date;
 }
 
 export interface VideoCall {
   id: string;
   participants: User[];
   isActive: boolean;
+  startedAt?: Date;
 }
 
 export type AppPage = 'home' | 'chat' | 'video' | 'groups' | 'settings';
@@ -34,7 +37,6 @@ export type AppPage = 'home' | 'chat' | 'video' | 'groups' | 'settings';
 export interface AppState {
   currentPage: AppPage;
   user: User | null;
-  onlineUsers: number;
   currentChat: ChatRoom | null;
   currentCall: VideoCall | null;
 }
