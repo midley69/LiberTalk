@@ -51,7 +51,7 @@ const activeGroups = new Map(); // groupId -> groupData
 // FONCTIONS UTILITAIRES
 // ==========================================
 function generateId(prefix = '') {
-    return `${prefix}${prefix ? '_' : ''}${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    return `${prefix}${prefix ? '_' : ''}${Date.now()}_${Math.random().toString(36).substring(2, 11)}`;
 }
 
 function sanitizeMessage(message) {
