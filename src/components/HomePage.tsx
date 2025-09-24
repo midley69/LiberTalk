@@ -9,6 +9,7 @@ export function HomePage() {
   const { setPage, setUser } = useApp();
   const [isConnecting, setIsConnecting] = useState(true);
   const [connectionError, setConnectionError] = useState<string | null>(null);
+  const [onlineUsers, setOnlineUsers] = useState(Math.floor(Math.random() * 500) + 100);
   const socketService = SocketService.getInstance();
 
   useEffect(() => {
@@ -19,10 +20,7 @@ export function HomePage() {
         setIsConnecting(true);
         setConnectionError(null);
         
-        // Connecter au serveur Socket.io
         await socketService.connect();
-        
-        // Enregistrer un utilisateur anonyme
         const user = await socketService.registerUser();
         
         if (mounted) {
@@ -30,150 +28,84 @@ export function HomePage() {
           setIsConnecting(false);
           console.log('✅ Connexion établie');
         }
+
+        socketService.onStatsUpdate((stats) => {
+          if (mounted && stats.onlineUsers) {
+            setOnlineUsers(stats.onlineUsers);
+          }
+        });
       } catch (error) {
         console.error('❌ Erreur de connexion:', error);
         if (mounted) {
-          setConnectionError('Connexion au serveur impossible. Réessayer...');
+          setConnectionError('Mode hors ligne - Fonctionnalités limitées');
           setIsConnecting(false);
-          
-          // Retry après 3 secondes
-          setTimeout(() => {
-            if (mounted) initializeConnection();
-          }, 3000);
         }
       }
     };
 
     initializeConnection();
 
-    // Cleanup
     return () => {
       mounted = false;
     };
   }, [setUser]);
 
-  const handleNavigation = (page: 'chat' | 'video' | 'groups') => {
-    if (!isConnecting && !connectionError) {
-      setPage(page);
-    }
-  };
-
   return (
-    <div className="relative h-full flex flex-col overflow-hidden bg-gradient-to-br from-slate-900 via-purple-900/20 to-slate-900">
+    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900/20 to-slate-900 relative overflow-hidden">
       <ParticleBackground />
       
-      {/* Globe Background */}
-      <div className="absolute inset-0 flex items-center justify-center opacity-20 pointer-events-none" aria-hidden="true">
-        <GlobeComponent />
-      </div>
-      
-      <div className="relative z-10 flex flex-col h-full">
-        {/* Header */}
-        <header className="flex-shrink-0 text-center pt-8 sm:pt-12 md:pt-16 pb-4 sm:pb-6 md:pb-8 px-4">
-          <h1 className="text-3xl sm:text-5xl md:text-7xl font-bold bg-gradient-to-r from-cyan-400 via-blue-500 to-purple-600 bg-clip-text text-transparent mb-2 sm:mb-4 animate-fade-in">
-            Libekoo
+      <div className="relative z-10 flex flex-col items-center justify-center min-h-screen p-8">
+        <div className="text-center mb-12">
+          <h1 className="text-5xl md:text-7xl font-bold text-white mb-4">
+            Lebekoo
           </h1>
-          <p className="text-base sm:text-xl md:text-3xl text-white font-light leading-tight animate-fade-in">
-            Connectez-vous avec des personnes
-            <br />
-            <span className="bg-gradient-to-r from-pink-400 to-cyan-400 bg-clip-text text-transparent font-semibold">
-              réelles instantanément
-            </span>
+          <p className="text-xl md:text-2xl text-purple-200">
+            Connectez-vous avec le monde
           </p>
-        </header>
+          {connectionError && (
+            <p className="text-yellow-400 mt-2 text-sm">{connectionError}</p>
+          )}
+        </div>
 
-        {/* Status de connexion */}
-        {(isConnecting || connectionError) && (
-          <div className="text-center text-white mb-4 px-4" role="status" aria-live="polite">
-            <div className="inline-flex items-center space-x-2">
-              {isConnecting ? (
-                <>
-                  <div className="w-2 h-2 bg-yellow-400 rounded-full animate-pulse" aria-hidden="true" />
-                  <span className="text-xs sm:text-sm">Connexion au serveur...</span>
-                </>
-              ) : connectionError ? (
-                <>
-                  <div className="w-2 h-2 bg-red-400 rounded-full" aria-hidden="true" />
-                  <span className="text-xs sm:text-sm text-red-300">{connectionError}</span>
-                </>
-              ) : null}
-            </div>
-          </div>
-        )}
+        <GlobeComponent onlineUsers={onlineUsers} />
 
-        {/* Main Action Buttons */}
-        <main className="flex-1 flex items-center justify-center px-4 pb-8 sm:pb-12">
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 sm:gap-6 max-w-6xl w-full">
-            {/* Chat Button */}
-            <button
-              onClick={() => handleNavigation('chat')}
-              disabled={isConnecting || !!connectionError}
-              className="group relative p-6 sm:p-8 bg-white/5 backdrop-blur-sm rounded-2xl border border-white/10 hover:border-cyan-400/50 transition-all duration-300 transform hover:scale-105 hover:shadow-2xl hover:shadow-cyan-500/20 animate-slide-in disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100 focus:outline-none focus:ring-2 focus:ring-cyan-400 focus:ring-offset-2 focus:ring-offset-slate-900"
-              aria-label="Accéder au chat textuel"
-            >
-              <div className="text-center space-y-3 sm:space-y-4">
-                <div className="w-12 h-12 sm:w-14 sm:h-14 md:w-16 md:h-16 mx-auto bg-gradient-to-br from-cyan-400 to-blue-500 rounded-full flex items-center justify-center group-hover:scale-110 transition-transform duration-300">
-                  <MessageCircle className="w-6 h-6 sm:w-7 sm:h-7 md:w-8 md:h-8 text-white" aria-hidden="true" />
-                </div>
-                <div>
-                  <h2 className="text-base sm:text-lg md:text-xl font-semibold text-white mb-1 sm:mb-2">
-                    Chat Textuel
-                  </h2>
-                  <p className="text-gray-300 text-xs sm:text-sm">
-                    Discussions instantanées avec de vraies personnes
-                  </p>
-                </div>
-              </div>
-              <div className="absolute inset-0 rounded-2xl bg-gradient-to-r from-cyan-400/10 to-blue-500/10 opacity-0 group-hover:opacity-100 transition-opacity duration-300 pointer-events-none" aria-hidden="true" />
-            </button>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mt-12 w-full max-w-4xl">
+          <button
+            onClick={() => setPage('chat')}
+            disabled={isConnecting}
+            className="group relative bg-white/10 backdrop-blur-lg rounded-2xl p-6 hover:bg-white/20 transition-all duration-300 transform hover:scale-105 disabled:opacity-50"
+          >
+            <MessageCircle className="w-12 h-12 text-purple-300 mb-4 mx-auto" />
+            <h3 className="text-xl font-semibold text-white mb-2">Chat Aléatoire</h3>
+            <p className="text-purple-200 text-sm">Discutez avec des inconnus</p>
+          </button>
 
-            {/* Video Button */}
-            <button
-              onClick={() => handleNavigation('video')}
-              disabled={isConnecting || !!connectionError}
-              className="group relative p-6 sm:p-8 bg-white/5 backdrop-blur-sm rounded-2xl border border-white/10 hover:border-purple-400/50 transition-all duration-300 transform hover:scale-105 hover:shadow-2xl hover:shadow-purple-500/20 animate-slide-in animation-delay-100 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100 focus:outline-none focus:ring-2 focus:ring-purple-400 focus:ring-offset-2 focus:ring-offset-slate-900"
-              aria-label="Accéder aux appels vidéo"
-            >
-              <div className="text-center space-y-3 sm:space-y-4">
-                <div className="w-12 h-12 sm:w-14 sm:h-14 md:w-16 md:h-16 mx-auto bg-gradient-to-br from-purple-400 to-pink-500 rounded-full flex items-center justify-center group-hover:scale-110 transition-transform duration-300">
-                  <Video className="w-6 h-6 sm:w-7 sm:h-7 md:w-8 md:h-8 text-white" aria-hidden="true" />
-                </div>
-                <div>
-                  <h2 className="text-base sm:text-lg md:text-xl font-semibold text-white mb-1 sm:mb-2">
-                    Appel Vidéo
-                  </h2>
-                  <p className="text-gray-300 text-xs sm:text-sm">
-                    Connexions vidéo aléatoires et instantanées
-                  </p>
-                </div>
-              </div>
-              <div className="absolute inset-0 rounded-2xl bg-gradient-to-r from-purple-400/10 to-pink-500/10 opacity-0 group-hover:opacity-100 transition-opacity duration-300 pointer-events-none" aria-hidden="true" />
-            </button>
+          <button
+            onClick={() => setPage('video')}
+            disabled={isConnecting}
+            className="group relative bg-white/10 backdrop-blur-lg rounded-2xl p-6 hover:bg-white/20 transition-all duration-300 transform hover:scale-105 disabled:opacity-50"
+          >
+            <Video className="w-12 h-12 text-pink-300 mb-4 mx-auto" />
+            <h3 className="text-xl font-semibold text-white mb-2">Appel Vidéo</h3>
+            <p className="text-pink-200 text-sm">Face à face virtuel</p>
+          </button>
 
-            {/* Groups Button */}
-            <button
-              onClick={() => handleNavigation('groups')}
-              disabled={isConnecting || !!connectionError}
-              className="group relative p-6 sm:p-8 bg-white/5 backdrop-blur-sm rounded-2xl border border-white/10 hover:border-green-400/50 transition-all duration-300 transform hover:scale-105 hover:shadow-2xl hover:shadow-green-500/20 animate-slide-in animation-delay-200 sm:col-span-2 lg:col-span-1 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100 focus:outline-none focus:ring-2 focus:ring-green-400 focus:ring-offset-2 focus:ring-offset-slate-900"
-              aria-label="Accéder aux groupes de discussion"
-            >
-              <div className="text-center space-y-3 sm:space-y-4">
-                <div className="w-12 h-12 sm:w-14 sm:h-14 md:w-16 md:h-16 mx-auto bg-gradient-to-br from-green-400 to-emerald-500 rounded-full flex items-center justify-center group-hover:scale-110 transition-transform duration-300">
-                  <Users className="w-6 h-6 sm:w-7 sm:h-7 md:w-8 md:h-8 text-white" aria-hidden="true" />
-                </div>
-                <div>
-                  <h2 className="text-base sm:text-lg md:text-xl font-semibold text-white mb-1 sm:mb-2">
-                    Groupes
-                  </h2>
-                  <p className="text-gray-300 text-xs sm:text-sm">
-                    Discussions de groupe thématiques
-                  </p>
-                </div>
-              </div>
-              <div className="absolute inset-0 rounded-2xl bg-gradient-to-r from-green-400/10 to-emerald-500/10 opacity-0 group-hover:opacity-100 transition-opacity duration-300 pointer-events-none" aria-hidden="true" />
-            </button>
-          </div>
-        </main>
+          <button
+            onClick={() => setPage('groups')}
+            disabled={isConnecting}
+            className="group relative bg-white/10 backdrop-blur-lg rounded-2xl p-6 hover:bg-white/20 transition-all duration-300 transform hover:scale-105 disabled:opacity-50"
+          >
+            <Users className="w-12 h-12 text-blue-300 mb-4 mx-auto" />
+            <h3 className="text-xl font-semibold text-white mb-2">Groupes</h3>
+            <p className="text-blue-200 text-sm">Discussions de groupe</p>
+          </button>
+        </div>
+
+        <div className="mt-8 text-center">
+          <p className="text-purple-200">
+            <span className="font-semibold text-2xl text-white">{onlineUsers}</span> utilisateurs en ligne
+          </p>
+        </div>
       </div>
     </div>
   );
