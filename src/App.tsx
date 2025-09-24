@@ -6,43 +6,50 @@ import { VideoCallPage } from './components/VideoCallPage';
 import { GroupsPage } from './components/GroupsPage';
 import { SettingsPage } from './components/SettingsPage';
 import { Navigation } from './components/Navigation';
+import { TestPage } from './components/TestPage'; // AJOUTER
 
 function AppContent() {
-  const { state } = useApp();
+    const { state } = useApp();
 
-  const renderCurrentPage = () => {
-    switch (state.currentPage) {
-      case 'home':
-        return <HomePage />;
-      case 'chat':
-        return <ChatPage />;
-      case 'video':
-        return <VideoCallPage />;
-      case 'groups':
-        return <GroupsPage />;
-      case 'settings':
-        return <SettingsPage />;
-      default:
-        return <HomePage />;
+    // AJOUTER CE CHECK POUR LA PAGE DE TEST
+    const urlParams = new URLSearchParams(window.location.search);
+    if (urlParams.get('test') === 'true') {
+        return <TestPage />;
     }
-  };
 
-  return (
-    <div className="h-screen flex flex-col bg-gradient-to-br from-slate-900 via-purple-900/20 to-slate-900">
-      <div className="flex-1 overflow-hidden">
-        {renderCurrentPage()}
-      </div>
-      {state.currentPage !== 'home' && <Navigation />}
-    </div>
-  );
+    const renderCurrentPage = () => {
+        switch (state.currentPage) {
+            case 'home':
+                return <HomePage />;
+            case 'chat':
+                return <ChatPage />;
+            case 'video':
+                return <VideoCallPage />;
+            case 'groups':
+                return <GroupsPage />;
+            case 'settings':
+                return <SettingsPage />;
+            default:
+                return <HomePage />;
+        }
+    };
+
+    return (
+        <div className="h-screen flex flex-col bg-gradient-to-br from-slate-900 via-purple-900/20 to-slate-900">
+            <div className="flex-1 overflow-hidden">
+                {renderCurrentPage()}
+            </div>
+            {state.currentPage !== 'home' && <Navigation />}
+        </div>
+    );
 }
 
 function App() {
-  return (
-    <AppProvider>
-      <AppContent />
-    </AppProvider>
-  );
+    return (
+        <AppProvider>
+            <AppContent />
+        </AppProvider>
+    );
 }
 
 export default App;

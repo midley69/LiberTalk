@@ -5,632 +5,479 @@ import cors from 'cors';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
-import sqlite3 from 'sqlite3';
-import { open } from 'sqlite';
 import crypto from 'crypto';
-import fetch from 'node-fetch';
 
-// Obtenir __dirname en ES6
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 const app = express();
 const server = createServer(app);
 
-// Configuration CORS plus permissive pour résoudre les problèmes de connexion
-const corsOrigins = process.env.NODE_ENV === 'production'
-    ? ['https://libekoo.me', 'https://www.libekoo.me', 'http://libekoo.me', 'http://www.libekoo.me']
-    : ['http://localhost:5173', 'http://localhost:3000', 'http://127.0.0.1:5173'];
-
+// Configuration CORS
 const io = new Server(server, {
     cors: {
-        origin: true, // Accepter toutes les origines temporairement pour debug
+        origin: true,
         methods: ['GET', 'POST'],
-        credentials: true,
-        allowedHeaders: ['Content-Type']
+        credentials: true
     },
     pingInterval: 10000,
     pingTimeout: 5000,
-    transports: ['polling', 'websocket'],
-    allowEIO3: true
+    transports: ['polling', 'websocket']
 });
 
 // Middleware
-app.use(cors({
-    origin: true,
-    credentials: true,
-    methods: ['GET', 'POST', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization']
-}));
-app.use(express.json({ limit: '10mb' }));
-
-// Middleware pour logger les requêtes
-app.use((req, res, next) => {
-    console.log(`📥 ${req.method} ${req.path} - ${req.ip}`);
-    next();
-});
+app.use(cors({ origin: true, credentials: true }));
+app.use(express.json());
 
 // Servir les fichiers statiques en production
 if (process.env.NODE_ENV === 'production') {
-    app.use(express.static(path.join(__dirname, 'dist'), {
-        maxAge: '1d',
-        etag: true
-    }));
+    app.use(express.static(path.join(__dirname, 'dist')));
 }
 
 // ==========================================
-// BASE DE DONNÉES SQLite
+// STOCKAGE IN-MEMORY
 // ==========================================
-let db;
-
-async function initDatabase() {
-    const dbPath = path.join(__dirname, 'libekoo.db');
-    console.log('📁 Base de données:', dbPath);
-
-    db = await open({
-        filename: dbPath,
-        driver: sqlite3.verbose().Database
-    });
-
-    // Tables avec support de géolocalisation
-    await db.exec(`
-    CREATE TABLE IF NOT EXISTS users (
-      id TEXT PRIMARY KEY,
-      username TEXT NOT NULL,
-      socket_id TEXT,
-      is_anonymous BOOLEAN DEFAULT 1,
-      city TEXT,
-      region TEXT,
-      country TEXT,
-      latitude REAL,
-      longitude REAL,
-      ip_address TEXT,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      last_seen DATETIME DEFAULT CURRENT_TIMESTAMP
-    );
-
-    CREATE TABLE IF NOT EXISTS chat_sessions (
-      id TEXT PRIMARY KEY,
-      user1_id TEXT NOT NULL,
-      user2_id TEXT NOT NULL,
-      distance_km REAL,
-      status TEXT DEFAULT 'active',
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      ended_at DATETIME,
-      FOREIGN KEY (user1_id) REFERENCES users(id),
-      FOREIGN KEY (user2_id) REFERENCES users(id)
-    );
-
-    CREATE TABLE IF NOT EXISTS messages (
-      id TEXT PRIMARY KEY,
-      session_id TEXT NOT NULL,
-      user_id TEXT NOT NULL,
-      message TEXT NOT NULL,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (session_id) REFERENCES chat_sessions(id),
-      FOREIGN KEY (user_id) REFERENCES users(id)
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id);
-    CREATE INDEX IF NOT EXISTS idx_sessions_users ON chat_sessions(user1_id, user2_id);
-    CREATE INDEX IF NOT EXISTS idx_users_socket ON users(socket_id);
-    CREATE INDEX IF NOT EXISTS idx_users_location ON users(country, region, city);
-  `);
-
-    console.log('✅ Base de données initialisée');
-}
-
-// ==========================================
-// STOCKAGE IN-MEMORY (Cache)
-// ==========================================
-const activeUsers = new Map(); // socketId -> userId
+const users = new Map(); // userId -> userData
+const activeSockets = new Map(); // socketId -> userId  
+const chatSessions = new Map(); // sessionId -> sessionData
 const waitingQueues = {
-    chat: new Map(), // userId -> {userData, location}
-    video: new Map(),
-    group: new Map()
+    chat: new Set(),
+    video: new Set(),
+    groups: new Map() // groupId -> Set of userIds
 };
+const activeGroups = new Map(); // groupId -> groupData
 
 // ==========================================
 // FONCTIONS UTILITAIRES
 // ==========================================
-const generateId = (prefix = 'id') => {
-    return `${prefix}_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
-};
-
-const sanitizeMessage = (message) => {
-    if (!message || typeof message !== 'string') return '';
-    return message.slice(0, 1000).replace(/[<>]/g, '');
-};
-
-// Calculer la distance entre deux points GPS (formule de Haversine)
-function calculateDistance(lat1, lon1, lat2, lon2) {
-    if (!lat1 || !lon1 || !lat2 || !lon2) return null;
-
-    const R = 6371; // Rayon de la Terre en km
-    const dLat = (lat2 - lat1) * Math.PI / 180;
-    const dLon = (lon2 - lon1) * Math.PI / 180;
-    const a =
-        Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-        Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
-        Math.sin(dLon / 2) * Math.sin(dLon / 2);
-    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-    return R * c; // Distance en km
+function generateId(prefix = '') {
+    return `${prefix}${prefix ? '_' : ''}${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
 }
 
-// Obtenir la géolocalisation par IP
-async function getLocationFromIP(ip) {
-    try {
-        // Nettoyer l'IP (enlever ::ffff: pour IPv4 mappée)
-        const cleanIp = ip.replace(/^::ffff:/, '');
-
-        // Ne pas géolocaliser les IPs locales
-        if (cleanIp === '127.0.0.1' || cleanIp === 'localhost' || cleanIp.startsWith('192.168.') || cleanIp.startsWith('10.')) {
-            return {
-                city: 'Local',
-                region: 'Local',
-                country: 'Local',
-                latitude: 0,
-                longitude: 0
-            };
-        }
-
-        // Utiliser ipapi.co (gratuit, 1000 requêtes/jour)
-        const response = await fetch(`https://ipapi.co/${cleanIp}/json/`);
-        if (response.ok) {
-            const data = await response.json();
-            return {
-                city: data.city || 'Unknown',
-                region: data.region || 'Unknown',
-                country: data.country_name || 'Unknown',
-                latitude: data.latitude || 0,
-                longitude: data.longitude || 0
-            };
-        }
-    } catch (error) {
-        console.error('Erreur géolocalisation IP:', error);
-    }
-
-    return null;
+function sanitizeMessage(message) {
+    return String(message).trim().slice(0, 500);
 }
 
 // ==========================================
-// GESTION DES UTILISATEURS
+// API REST ENDPOINTS
 // ==========================================
-async function createUser(socketId, username, location, ipAddress) {
-    const userId = generateId('user');
-    const safeUsername = username || `Anonyme_${Math.floor(Math.random() * 9999)}`;
 
-    // Géolocalisation par IP si pas fournie par le client
-    let finalLocation = location || {};
-    if (!finalLocation.city && ipAddress) {
-        const ipLocation = await getLocationFromIP(ipAddress);
-        if (ipLocation) {
-            finalLocation = ipLocation;
-        }
-    }
+// Health check
+app.get('/api/health', (req, res) => {
+    res.json({
+        status: 'ok',
+        users: users.size,
+        activeSockets: activeSockets.size,
+        chatSessions: chatSessions.size,
+        groups: activeGroups.size
+    });
+});
 
-    await db.run(
-        `INSERT INTO users (id, username, socket_id, is_anonymous, city, region, country, latitude, longitude, ip_address) 
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [
-            userId,
-            safeUsername,
-            socketId,
-            !username,
-            finalLocation.city || null,
-            finalLocation.region || null,
-            finalLocation.country || null,
-            finalLocation.lat || null,
-            finalLocation.lon || null,
-            ipAddress
-        ]
-    );
-
-    activeUsers.set(socketId, userId);
-
-    return {
-        id: userId,
-        username: safeUsername,
-        isAnonymous: !username,
-        location: finalLocation
-    };
-}
-
-async function disconnectUser(socketId) {
-    const userId = activeUsers.get(socketId);
-    if (userId) {
-        await db.run(
-            'UPDATE users SET socket_id = NULL, last_seen = CURRENT_TIMESTAMP WHERE id = ?',
-            [userId]
-        );
-
-        // Retirer des files d'attente
-        Object.values(waitingQueues).forEach(queue => {
-            queue.delete(userId);
-        });
-
-        activeUsers.delete(socketId);
-    }
-}
+// Get stats
+app.get('/api/stats', (req, res) => {
+    res.json({
+        onlineUsers: users.size,
+        activeChats: chatSessions.size,
+        activeGroups: activeGroups.size,
+        waitingChat: waitingQueues.chat.size,
+        waitingVideo: waitingQueues.video.size
+    });
+});
 
 // ==========================================
-// GESTION DES SESSIONS DE CHAT
+// GESTION SOCKET.IO
 // ==========================================
-async function createChatSession(user1Id, user2Id, distance = null) {
-    const sessionId = generateId('session');
 
-    await db.run(
-        'INSERT INTO chat_sessions (id, user1_id, user2_id, distance_km) VALUES (?, ?, ?, ?)',
-        [sessionId, user1Id, user2Id, distance]
-    );
-
-    return sessionId;
-}
-
-async function endChatSession(sessionId) {
-    await db.run(
-        'UPDATE chat_sessions SET status = ?, ended_at = CURRENT_TIMESTAMP WHERE id = ?',
-        ['ended', sessionId]
-    );
-}
-
-async function saveMessage(sessionId, userId, message) {
-    const messageId = generateId('msg');
-    const safeMessage = sanitizeMessage(message);
-
-    await db.run(
-        'INSERT INTO messages (id, session_id, user_id, message) VALUES (?, ?, ?, ?)',
-        [messageId, sessionId, userId, safeMessage]
-    );
-
-    return { id: messageId, message: safeMessage, timestamp: new Date() };
-}
-
-async function getSessionMessages(sessionId, limit = 100) {
-    return await db.all(
-        `SELECT m.*, u.username 
-     FROM messages m 
-     JOIN users u ON m.user_id = u.id 
-     WHERE m.session_id = ? 
-     ORDER BY m.created_at DESC 
-     LIMIT ?`,
-        [sessionId, limit]
-    );
-}
-
-// ==========================================
-// MATCHING ALGORITHM AVEC GÉOLOCALISATION
-// ==========================================
-async function attemptMatch(type, userId, userLocation) {
-    if (type !== 'chat') return null;
-
-    const queue = waitingQueues[type];
-    const userEntry = queue.get(userId);
-
-    if (!userEntry) return null;
-
-    let bestMatch = null;
-    let minDistance = Infinity;
-
-    // Parcourir la file pour trouver le meilleur match
-    for (const [otherId, otherEntry] of queue.entries()) {
-        if (otherId === userId) continue;
-
-        // Calculer la distance si les coordonnées sont disponibles
-        let distance = null;
-        if (userLocation?.lat && userLocation?.lon && otherEntry.location?.lat && otherEntry.location?.lon) {
-            distance = calculateDistance(
-                userLocation.lat,
-                userLocation.lon,
-                otherEntry.location.lat,
-                otherEntry.location.lon
-            );
-
-            // Prioriser les utilisateurs proches
-            if (distance !== null && distance < minDistance) {
-                minDistance = distance;
-                bestMatch = { id: otherId, data: otherEntry, distance };
-            }
-        } else {
-            // Si pas de coordonnées, matcher par pays/région
-            if (userLocation?.country === otherEntry.location?.country) {
-                if (userLocation?.region === otherEntry.location?.region) {
-                    // Même région
-                    bestMatch = { id: otherId, data: otherEntry, distance: 0 };
-                    break;
-                } else if (!bestMatch) {
-                    // Même pays
-                    bestMatch = { id: otherId, data: otherEntry, distance: 100 };
-                }
-            } else if (!bestMatch) {
-                // Différent pays, mais on prend si pas d'autre option
-                bestMatch = { id: otherId, data: otherEntry, distance: 1000 };
-            }
-        }
-    }
-
-    if (bestMatch) {
-        const partnerId = bestMatch.id;
-        const distance = bestMatch.distance;
-
-        // Créer la session
-        const sessionId = await createChatSession(userId, partnerId, distance);
-
-        // Retirer de la file
-        queue.delete(userId);
-        queue.delete(partnerId);
-
-        console.log(`💑 Match créé: ${userId} <-> ${partnerId} (${distance ? Math.round(distance) + 'km' : 'proximité inconnue'})`);
-
-        return { sessionId, partnerId, distance };
-    }
-
-    return null;
-}
-
-// ==========================================
-// SOCKET.IO EVENTS
-// ==========================================
 io.on('connection', (socket) => {
-    const clientIp = socket.handshake.headers['x-real-ip'] ||
-        socket.handshake.headers['x-forwarded-for']?.split(',')[0] ||
-        socket.handshake.address;
+    console.log('🔌 Nouvelle connexion:', socket.id);
 
-    console.log(`✅ Client connecté: ${socket.id} (IP: ${clientIp})`);
-
-    // Test de connexion
-    socket.emit('connection-success', { socketId: socket.id });
-
-    // Enregistrement utilisateur avec géolocalisation
-    socket.on('user:register', async (userData, callback) => {
+    // Enregistrement utilisateur
+    socket.on('user:register', (data, callback) => {
         try {
-            const user = await createUser(
-                socket.id,
-                userData.username,
-                userData.location,
-                clientIp
-            );
+            const userId = generateId('user');
+            const username = data?.username || `Anonyme_${Math.floor(Math.random() * 9999)}`;
 
-            console.log(`👤 Utilisateur créé: ${user.username} de ${user.location?.city || 'Unknown'}, ${user.location?.country || 'Unknown'}`);
-            callback({ success: true, user });
-        } catch (error) {
-            console.error('Erreur inscription:', error);
-            callback({ success: false, error: 'Erreur lors de l\'inscription' });
-        }
-    });
-
-    // Rejoindre une file d'attente avec localisation
-    socket.on('queue:join', async ({ type, userId, location }, callback) => {
-        try {
-            if (!['chat', 'video', 'group'].includes(type)) {
-                throw new Error('Type invalide');
-            }
-
-            // Retirer des autres files
-            Object.values(waitingQueues).forEach(queue => {
-                queue.delete(userId);
-            });
-
-            // Ajouter à la file avec les infos de localisation
-            waitingQueues[type].set(userId, {
+            const user = {
+                id: userId,
+                username,
                 socketId: socket.id,
-                location: location || {},
-                joinedAt: new Date()
+                isAnonymous: !data?.username,
+                location: data?.location || 'Non spécifié',
+                createdAt: new Date(),
+                status: 'online'
+            };
+
+            users.set(userId, user);
+            activeSockets.set(socket.id, userId);
+            socket.userId = userId;
+
+            // Joindre la room de l'utilisateur
+            socket.join(`user_${userId}`);
+
+            // Broadcast du nombre d'utilisateurs
+            io.emit('stats:update', {
+                onlineUsers: users.size
             });
 
-            console.log(`📋 ${userId} rejoint la file ${type} (${waitingQueues[type].size} en attente)`);
-            callback({ success: true });
+            callback({ success: true, user });
+            console.log(`✅ Utilisateur enregistré: ${username} (${userId})`);
+        } catch (error) {
+            console.error('❌ Erreur registration:', error);
+            callback({ success: false, error: error.message });
+        }
+    });
 
-            // Tenter un match immédiatement
-            const match = await attemptMatch(type, userId, location);
-            if (match) {
-                // Obtenir les infos des deux utilisateurs
-                const user1 = await db.get('SELECT * FROM users WHERE id = ?', userId);
-                const user2 = await db.get('SELECT * FROM users WHERE id = ?', match.partnerId);
+    // Chat Aléatoire - Recherche de partenaire
+    socket.on('chat:findPartner', async (data, callback) => {
+        try {
+            const userId = activeSockets.get(socket.id);
+            if (!userId) {
+                return callback({ success: false, error: 'Non authentifié' });
+            }
 
-                // Notifier les deux utilisateurs
-                if (user1?.socket_id) {
-                    io.to(user1.socket_id).emit('match:found', {
-                        sessionId: match.sessionId,
-                        partner: {
-                            id: match.partnerId,
-                            username: user2?.username || 'Anonyme',
-                            location: {
-                                city: user2?.city,
-                                region: user2?.region,
-                                country: user2?.country
-                            }
-                        },
-                        distance: match.distance
+            const user = users.get(userId);
+
+            // Vérifier si déjà en attente
+            if (waitingQueues.chat.has(userId)) {
+                return callback({ success: false, error: 'Déjà en recherche' });
+            }
+
+            // Chercher un partenaire disponible
+            const availablePartner = Array.from(waitingQueues.chat).find(partnerId => partnerId !== userId);
+
+            if (availablePartner) {
+                // Match trouvé!
+                waitingQueues.chat.delete(availablePartner);
+
+                const sessionId = generateId('chat');
+                const partner = users.get(availablePartner);
+
+                const session = {
+                    id: sessionId,
+                    user1: { id: userId, username: user.username },
+                    user2: { id: availablePartner, username: partner.username },
+                    messages: [],
+                    createdAt: new Date(),
+                    status: 'active'
+                };
+
+                chatSessions.set(sessionId, session);
+
+                // Joindre les deux utilisateurs à la room de chat
+                const partnerSocket = Array.from(activeSockets.entries())
+                    .find(([sId, uId]) => uId === availablePartner)?.[0];
+
+                if (partnerSocket) {
+                    socket.join(`chat_${sessionId}`);
+                    io.sockets.sockets.get(partnerSocket).join(`chat_${sessionId}`);
+
+                    // Notifier les deux utilisateurs
+                    io.to(`chat_${sessionId}`).emit('chat:matched', {
+                        sessionId,
+                        partner: userId === session.user1.id ? session.user2 : session.user1
                     });
-                }
 
-                if (user2?.socket_id) {
-                    io.to(user2.socket_id).emit('match:found', {
-                        sessionId: match.sessionId,
-                        partner: {
-                            id: userId,
-                            username: user1?.username || 'Anonyme',
-                            location: {
-                                city: user1?.city,
-                                region: user1?.region,
-                                country: user1?.country
-                            }
-                        },
-                        distance: match.distance
+                    callback({
+                        success: true,
+                        sessionId,
+                        partner: partner.username
                     });
+
+                    console.log(`💑 Match: ${user.username} <-> ${partner.username}`);
                 }
+            } else {
+                // Ajouter à la file d'attente
+                waitingQueues.chat.add(userId);
+                callback({ success: true, waiting: true });
+                console.log(`⏳ ${user.username} en attente...`);
             }
         } catch (error) {
-            console.error('Erreur queue:join:', error);
+            console.error('❌ Erreur findPartner:', error);
             callback({ success: false, error: error.message });
         }
     });
 
-    // Quitter la file
-    socket.on('queue:leave', ({ userId }, callback) => {
+    // Envoi de message
+    socket.on('chat:sendMessage', (data, callback) => {
         try {
-            Object.values(waitingQueues).forEach(queue => {
-                queue.delete(userId);
-            });
-            callback({ success: true });
-        } catch (error) {
-            callback({ success: false, error: error.message });
-        }
-    });
+            const userId = activeSockets.get(socket.id);
+            const { sessionId, message } = data;
 
-    // Envoyer un message
-    socket.on('message:send', async ({ sessionId, userId, message }, callback) => {
-        try {
-            // Vérifier la session
-            const session = await db.get(
-                'SELECT * FROM chat_sessions WHERE id = ? AND status = ?',
-                [sessionId, 'active']
-            );
+            if (!userId || !sessionId || !message) {
+                return callback({ success: false, error: 'Données invalides' });
+            }
 
+            const session = chatSessions.get(sessionId);
             if (!session) {
-                throw new Error('Session invalide ou terminée');
+                return callback({ success: false, error: 'Session introuvable' });
             }
 
-            // Sauvegarder le message
-            const savedMessage = await saveMessage(sessionId, userId, message);
+            const user = users.get(userId);
+            const messageData = {
+                id: generateId('msg'),
+                userId,
+                username: user.username,
+                message: sanitizeMessage(message),
+                timestamp: new Date()
+            };
 
-            // Obtenir l'autre utilisateur
-            const otherId = session.user1_id === userId ? session.user2_id : session.user1_id;
-            const otherUser = await db.get('SELECT * FROM users WHERE id = ?', otherId);
-            const sender = await db.get('SELECT * FROM users WHERE id = ?', userId);
+            session.messages.push(messageData);
 
-            // Envoyer au destinataire
-            if (otherUser?.socket_id) {
-                io.to(otherUser.socket_id).emit('message:receive', {
-                    id: savedMessage.id,
-                    userId,
-                    username: sender?.username || 'Anonyme',
-                    message: savedMessage.message,
-                    timestamp: savedMessage.timestamp,
-                    isOwn: false
-                });
-            }
+            // Envoyer à tous dans la room
+            io.to(`chat_${sessionId}`).emit('chat:message', messageData);
 
-            callback({ success: true, messageId: savedMessage.id });
+            callback({ success: true, messageId: messageData.id });
         } catch (error) {
-            console.error('Erreur message:send:', error);
+            console.error('❌ Erreur sendMessage:', error);
             callback({ success: false, error: error.message });
         }
     });
 
-    // Passer au suivant
-    socket.on('chat:skip', async ({ sessionId, userId }, callback) => {
-        try {
-            await endChatSession(sessionId);
+    // Skip utilisateur
+    socket.on('chat:skip', (data) => {
+        const userId = activeSockets.get(socket.id);
+        const { sessionId } = data;
 
-            // Notifier l'autre utilisateur
-            const session = await db.get('SELECT * FROM chat_sessions WHERE id = ?', sessionId);
+        if (sessionId) {
+            const session = chatSessions.get(sessionId);
             if (session) {
-                const otherId = session.user1_id === userId ? session.user2_id : session.user1_id;
-                const otherUser = await db.get('SELECT * FROM users WHERE id = ?', otherId);
+                session.status = 'ended';
+                io.to(`chat_${sessionId}`).emit('chat:ended', { reason: 'skip' });
 
-                if (otherUser?.socket_id) {
-                    io.to(otherUser.socket_id).emit('session:ended', { sessionId });
+                // Nettoyer
+                socket.leave(`chat_${sessionId}`);
+
+                // Libérer l'autre utilisateur
+                const otherId = session.user1.id === userId ? session.user2.id : session.user1.id;
+                const otherSocket = Array.from(activeSockets.entries())
+                    .find(([sId, uId]) => uId === otherId)?.[0];
+
+                if (otherSocket) {
+                    io.sockets.sockets.get(otherSocket)?.leave(`chat_${sessionId}`);
                 }
+
+                // Supprimer la session après un délai
+                setTimeout(() => chatSessions.delete(sessionId), 5000);
+            }
+        }
+    });
+
+    // Créer un groupe
+    socket.on('group:create', (data, callback) => {
+        try {
+            const userId = activeSockets.get(socket.id);
+            if (!userId) {
+                return callback({ success: false, error: 'Non authentifié' });
             }
 
-            // Remettre en file d'attente avec localisation
-            const user = await db.get('SELECT * FROM users WHERE id = ?', userId);
-            if (user) {
-                waitingQueues.chat.set(userId, {
-                    socketId: socket.id,
-                    location: {
-                        city: user.city,
-                        region: user.region,
-                        country: user.country,
-                        lat: user.latitude,
-                        lon: user.longitude
-                    },
-                    joinedAt: new Date()
-                });
-            }
+            const user = users.get(userId);
+            const groupId = generateId('group');
 
-            callback({ success: true });
+            const group = {
+                id: groupId,
+                name: data.name || `Groupe #${Math.floor(Math.random() * 9999)}`,
+                description: data.description || 'Discussion de groupe',
+                createdBy: userId,
+                createdByUsername: user.username,
+                members: new Set([userId]),
+                messages: [],
+                createdAt: new Date(),
+                maxMembers: 10
+            };
 
-            // Tenter un nouveau match
-            setTimeout(() => attemptMatch('chat', userId, user), 1000);
+            activeGroups.set(groupId, group);
+            waitingQueues.groups.set(groupId, new Set([userId]));
+
+            socket.join(`group_${groupId}`);
+
+            callback({
+                success: true, group: {
+                    id: group.id,
+                    name: group.name,
+                    description: group.description,
+                    memberCount: group.members.size
+                }
+            });
+
+            // Broadcast nouveau groupe
+            io.emit('group:new', {
+                id: group.id,
+                name: group.name,
+                description: group.description,
+                memberCount: 1
+            });
+
+            console.log(`👥 Groupe créé: ${group.name} par ${user.username}`);
         } catch (error) {
+            console.error('❌ Erreur création groupe:', error);
             callback({ success: false, error: error.message });
         }
     });
 
-    // Récupérer l'historique
-    socket.on('messages:history', async ({ sessionId }, callback) => {
+    // Rejoindre un groupe
+    socket.on('group:join', (data, callback) => {
         try {
-            const messages = await getSessionMessages(sessionId);
-            callback({ success: true, messages: messages.reverse() });
+            const userId = activeSockets.get(socket.id);
+            const { groupId } = data;
+
+            if (!userId || !groupId) {
+                return callback({ success: false, error: 'Données invalides' });
+            }
+
+            const group = activeGroups.get(groupId);
+            if (!group) {
+                return callback({ success: false, error: 'Groupe introuvable' });
+            }
+
+            if (group.members.size >= group.maxMembers) {
+                return callback({ success: false, error: 'Groupe complet' });
+            }
+
+            const user = users.get(userId);
+            group.members.add(userId);
+            socket.join(`group_${groupId}`);
+
+            // Notifier les membres
+            io.to(`group_${groupId}`).emit('group:userJoined', {
+                userId,
+                username: user.username,
+                memberCount: group.members.size
+            });
+
+            callback({
+                success: true,
+                group: {
+                    id: group.id,
+                    name: group.name,
+                    memberCount: group.members.size
+                }
+            });
+
+            console.log(`👤 ${user.username} a rejoint ${group.name}`);
         } catch (error) {
+            console.error('❌ Erreur join groupe:', error);
+            callback({ success: false, error: error.message });
+        }
+    });
+
+    // Message de groupe
+    socket.on('group:sendMessage', (data, callback) => {
+        try {
+            const userId = activeSockets.get(socket.id);
+            const { groupId, message } = data;
+
+            if (!userId || !groupId || !message) {
+                return callback({ success: false, error: 'Données invalides' });
+            }
+
+            const group = activeGroups.get(groupId);
+            if (!group || !group.members.has(userId)) {
+                return callback({ success: false, error: 'Accès refusé' });
+            }
+
+            const user = users.get(userId);
+            const messageData = {
+                id: generateId('gmsg'),
+                userId,
+                username: user.username,
+                message: sanitizeMessage(message),
+                timestamp: new Date()
+            };
+
+            group.messages.push(messageData);
+
+            // Envoyer à tous les membres
+            io.to(`group_${groupId}`).emit('group:message', messageData);
+
+            callback({ success: true, messageId: messageData.id });
+        } catch (error) {
+            console.error('❌ Erreur message groupe:', error);
+            callback({ success: false, error: error.message });
+        }
+    });
+
+    // Liste des groupes actifs
+    socket.on('group:list', (data, callback) => {
+        try {
+            const groupsList = Array.from(activeGroups.values()).map(g => ({
+                id: g.id,
+                name: g.name,
+                description: g.description,
+                memberCount: g.members.size,
+                createdBy: g.createdByUsername
+            }));
+
+            callback({ success: true, groups: groupsList });
+        } catch (error) {
+            console.error('❌ Erreur liste groupes:', error);
             callback({ success: false, error: error.message });
         }
     });
 
     // Déconnexion
-    socket.on('disconnect', async () => {
-        console.log(`❌ Client déconnecté: ${socket.id}`);
-        await disconnectUser(socket.id);
+    socket.on('disconnect', () => {
+        const userId = activeSockets.get(socket.id);
+
+        if (userId) {
+            const user = users.get(userId);
+            console.log(`👋 Déconnexion: ${user?.username || 'Inconnu'}`);
+
+            // Nettoyer les files d'attente
+            waitingQueues.chat.delete(userId);
+            waitingQueues.video.delete(userId);
+
+            // Retirer des groupes
+            activeGroups.forEach((group, groupId) => {
+                if (group.members.has(userId)) {
+                    group.members.delete(userId);
+                    io.to(`group_${groupId}`).emit('group:userLeft', {
+                        userId,
+                        username: user?.username,
+                        memberCount: group.members.size
+                    });
+
+                    // Supprimer le groupe s'il est vide
+                    if (group.members.size === 0) {
+                        activeGroups.delete(groupId);
+                    }
+                }
+            });
+
+            // Nettoyer les sessions de chat
+            chatSessions.forEach((session, sessionId) => {
+                if (session.user1.id === userId || session.user2.id === userId) {
+                    session.status = 'ended';
+                    io.to(`chat_${sessionId}`).emit('chat:ended', { reason: 'disconnect' });
+                    setTimeout(() => chatSessions.delete(sessionId), 5000);
+                }
+            });
+
+            // Supprimer l'utilisateur
+            users.delete(userId);
+            activeSockets.delete(socket.id);
+
+            // Broadcast stats
+            io.emit('stats:update', {
+                onlineUsers: users.size
+            });
+        }
     });
 });
 
-// ==========================================
-// ROUTES API REST
-// ==========================================
-app.get('/api/health', (req, res) => {
-    res.json({
-        status: 'ok',
-        timestamp: new Date(),
-        environment: process.env.NODE_ENV || 'development',
-        socketConnected: io.engine.clientsCount
-    });
+// Route catch-all pour le SPA
+app.get('*', (req, res) => {
+    res.sendFile(path.join(__dirname, 'dist', 'index.html'));
 });
 
-app.get('/api/queue-status', (req, res) => {
-    res.json({
-        chat: waitingQueues.chat.size,
-        video: waitingQueues.video.size,
-        group: waitingQueues.group.size
-    });
-});
-
-// Route SPA en production
-if (process.env.NODE_ENV === 'production') {
-    app.get('*', (req, res) => {
-        res.sendFile(path.join(__dirname, 'dist', 'index.html'));
-    });
-}
-
-// ==========================================
-// DÉMARRAGE DU SERVEUR
-// ==========================================
+// Démarrage du serveur
 const PORT = process.env.PORT || 3000;
-const HOST = '0.0.0.0';
-
-async function startServer() {
-    try {
-        await initDatabase();
-
-        server.listen(PORT, HOST, () => {
-            console.log(`🚀 Serveur démarré sur ${HOST}:${PORT}`);
-            console.log(`📡 Socket.io prêt avec géolocalisation`);
-            console.log(`🌍 Environnement: ${process.env.NODE_ENV || 'development'}`);
-            console.log(`📁 Base de données: ${path.join(__dirname, 'libekoo.db')}`);
-        });
-    } catch (error) {
-        console.error('❌ Erreur de démarrage:', error);
-        process.exit(1);
-    }
-}
-
-startServer();
-
-// Gestion propre de l'arrêt
-process.on('SIGTERM', async () => {
-    console.log('Arrêt du serveur...');
-    if (db) await db.close();
-    server.close(() => process.exit(0));
+server.listen(PORT, () => {
+    console.log(`
+    ╔══════════════════════════════════════╗
+    ║     🚀 SERVEUR LEBEKOO DÉMARRÉ       ║
+    ║     Port: ${PORT}                         ║
+    ║     Mode: ${process.env.NODE_ENV || 'development'}            ║
+    ║     URL: http://localhost:${PORT}       ║
+    ╚══════════════════════════════════════╝
+    `);
 });
