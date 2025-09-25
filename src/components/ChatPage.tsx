@@ -1,473 +1,671 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
-import {
-    Send,
-    ArrowLeft,
-    MessageCircle,
-    SkipForward,
-    Loader2,
-    AlertCircle,
-    MapPin,
-    Globe
-} from 'lucide-react';
+import React, { useState, useEffect, useRef } from 'react';
+import { Send, Users, MapPin, ArrowLeft, Plus, Hash, Globe, UserPlus, SkipForward, X, MessageCircle, Shuffle } from 'lucide-react';
 import { useApp } from '../context/AppContext';
-import { ChatMessage } from '../types';
-import SocketService from '../services/socketService';
+import { ChatMessage, ChatRoom } from '../types';
+import SupabaseService from '../services/SupabaseService';
+import RealTimeChatService from '../services/RealTimeChatService';
+import { RandomChatPage } from './RandomChatPage';
 
 export function ChatPage() {
-    const { setPage, state } = useApp();
-    const [currentView, setCurrentView] = useState<'menu' | 'random'>('menu');
-    const [messages, setMessages] = useState<ChatMessage[]>([]);
-    const [currentMessage, setCurrentMessage] = useState('');
-    const [isSearching, setIsSearching] = useState(false);
-    const [isConnected, setIsConnected] = useState(false);
-    const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
-    const [connectedUser, setConnectedUser] = useState<any>(null);
-    const [distance, setDistance] = useState<number | null>(null);
-    const [isSending, setIsSending] = useState(false);
-    const [error, setError] = useState<string | null>(null);
-    const [searchTimeout, setSearchTimeout] = useState<NodeJS.Timeout | null>(null);
-    const [userLocation, setUserLocation] = useState<any>(null);
+  const { setPage, state } = useApp();
+  const [currentView, setCurrentView] = useState<'menu' | 'random' | 'group' | 'local' | 'random_chat'>('menu');
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [currentMessage, setCurrentMessage] = useState('');
+  const [isSearching, setIsSearching] = useState(false);
+  const [isConnected, setIsConnected] = useState(false);
+  const [userLocation, setUserLocation] = useState<{country: string, city: string} | null>(null);
+  const [connectionTime, setConnectionTime] = useState(0);
+  const [canAddFriend, setCanAddFriend] = useState(false);
+  const [showAddFriend, setShowAddFriend] = useState(false);
+  const [connectedUsers, setConnectedUsers] = useState(0);
+  const [searchAttempts, setSearchAttempts] = useState(0);
+  const [currentUserId, setCurrentUserId] = useState<string>('');
+  const [connectedUser, setConnectedUser] = useState<any>(null);
+  const [waitingCounts, setWaitingCounts] = useState({ chat: 0, video: 0, group: 0 });
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+  
+  const supabaseService = SupabaseService.getInstance();
+  const realTimeChatService = RealTimeChatService.getInstance();
 
-    const messagesEndRef = useRef<HTMLDivElement>(null);
-    const messageInputRef = useRef<HTMLInputElement>(null);
-    const socketService = SocketService.getInstance();
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages]);
 
-    // Auto-scroll des messages
-    useEffect(() => {
-        messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-    }, [messages]);
-
-    // Focus sur l'input après connexion
-    useEffect(() => {
-        if (isConnected && messageInputRef.current) {
-            messageInputRef.current.focus();
+  useEffect(() => {
+    const locationEnabled = localStorage.getItem('locationEnabled');
+    if (locationEnabled === 'true' && navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition(
+        () => {
+          setUserLocation({ country: 'France', city: 'Paris' });
+        },
+        () => {
+          setUserLocation(null);
         }
-    }, [isConnected]);
+      );
+    } else {
+      setUserLocation(null);
+    }
+  }, []);
 
-    // Obtenir la localisation de l'utilisateur
-    useEffect(() => {
-        const location = socketService.getUserLocation();
-        setUserLocation(location);
-    }, []);
-
-    // Nettoyage du timeout de recherche
-    useEffect(() => {
-        return () => {
-            if (searchTimeout) {
-                clearTimeout(searchTimeout);
-            }
-        };
-    }, [searchTimeout]);
-
-    // Configuration des listeners Socket.io
-    useEffect(() => {
-        const setupListeners = () => {
-            // Match trouvé avec distance
-            socketService.onMatchFound((data) => {
-                console.log('💑 Match trouvé!', data);
-                setIsSearching(false);
-                setIsConnected(true);
-                setCurrentSessionId(data.sessionId);
-                setConnectedUser(data.partner);
-                setDistance(data.distance);
-                setError(null);
-
-                if (searchTimeout) {
-                    clearTimeout(searchTimeout);
-                    setSearchTimeout(null);
-                }
-
-                // Message système avec localisation
-                let locationInfo = '';
-                if (data.partner.location?.city && data.partner.location?.country) {
-                    locationInfo = ` depuis ${data.partner.location.city}, ${data.partner.location.country}`;
-                }
-
-                let distanceInfo = '';
-                if (data.distance !== null && data.distance !== undefined) {
-                    if (data.distance < 1) {
-                        distanceInfo = ' (même ville)';
-                    } else if (data.distance < 100) {
-                        distanceInfo = ` (à ${Math.round(data.distance)} km)`;
-                    } else if (data.distance < 1000) {
-                        distanceInfo = ` (même région)`;
-                    }
-                }
-
-                const sysMessage: ChatMessage = {
-                    id: `sys_${Date.now()}`,
-                    userId: 'system',
-                    username: 'Système',
-                    message: `Connecté avec ${data.partner.username}${locationInfo}${distanceInfo}`,
-                    timestamp: new Date(),
-                    isOwn: false
-                };
-                setMessages([sysMessage]);
-
-                // Charger l'historique si disponible
-                loadMessageHistory(data.sessionId);
-            });
-
-            // Réception de messages
-            socketService.onMessageReceive((message) => {
-                setMessages(prev => [...prev, message]);
-            });
-
-            // Fin de session
-            socketService.onSessionEnded(() => {
-                handleDisconnect('L\'autre utilisateur s\'est déconnecté');
-            });
-        };
-
-        setupListeners();
-    }, [searchTimeout]);
-
-    // Charger l'historique des messages
-    const loadMessageHistory = async (sessionId: string) => {
-        try {
-            const history = await socketService.getMessageHistory(sessionId);
-            if (history.length > 0) {
-                setMessages(prev => [...history, ...prev]);
-            }
-        } catch (error) {
-            console.error('Erreur chargement historique:', error);
-        }
+  // Charger les statistiques en temps réel toutes les 30 secondes
+  useEffect(() => {
+    const loadWaitingCounts = async () => {
+      try {
+        console.log('🔄 Mise à jour des statistiques de chat...');
+        
+        // Obtenir les vrais utilisateurs en attente pour le chat randomisé
+        const randomChatCount = await supabaseService.getRealRandomChatUsers();
+        const videoCount = await supabaseService.getUsersByStatus('video');
+        const groupCount = await supabaseService.getUsersByStatus('group');
+        
+        const newCounts = { chat: randomChatCount, video: videoCount, group: groupCount };
+        setWaitingCounts(newCounts);
+        
+        console.log('📊 Statistiques mises à jour:', newCounts);
+      } catch (error) {
+        console.error('❌ Erreur lors du chargement des statistiques:', error);
+        // En cas d'erreur, mettre des valeurs nulles pour indiquer qu'il n'y a pas de vrais utilisateurs
+        setWaitingCounts({ chat: 0, video: 0, group: 0 });
+      }
     };
 
-    // Connexion à un chat
-    const handleConnect = useCallback(async (type: 'random') => {
-        try {
-            setCurrentView(type);
-            setIsSearching(true);
-            setMessages([]);
-            setError(null);
-            setDistance(null);
+    // Charger immédiatement
+    loadWaitingCounts();
+    
+    // Puis toutes les 15 secondes pour plus de réactivité
+    const interval = setInterval(loadWaitingCounts, 15000);
 
-            // Rejoindre la file d'attente avec localisation
-            await socketService.joinQueue('chat');
+    return () => clearInterval(interval);
+  }, []);
 
-            // Timeout après 30 secondes
-            const timeout = setTimeout(() => {
-                setIsSearching(false);
-                setError('Aucun utilisateur disponible actuellement. Réessayez dans quelques instants.');
-                socketService.leaveQueue();
-            }, 30000);
+  useEffect(() => {
+    let interval: NodeJS.Timeout;
+    if (isConnected) {
+      interval = setInterval(() => {
+        setConnectionTime(prev => {
+          const newTime = prev + 1;
+          if (newTime === 30 && state.user && !state.user.isAnonymous && currentView === 'random') {
+            setCanAddFriend(true);
+          }
+          return newTime;
+        });
+      }, 1000);
+    }
+    return () => {
+      if (interval) clearInterval(interval);
+    };
+  }, [isConnected, state.user, currentView]);
 
-            setSearchTimeout(timeout);
-        } catch (error) {
-            console.error('❌ Erreur connexion:', error);
-            setIsSearching(false);
-            setError('Erreur de connexion. Veuillez réessayer.');
+  // Simuler des messages entrants de l'utilisateur connecté
+  useEffect(() => {
+    if (isConnected && connectedUser) {
+      const messageInterval = setInterval(() => {
+        const timeSinceConnection = connectionTime;
+        let messageChance = timeSinceConnection < 60 ? 0.15 : 0.08;
+        
+        if (Math.random() < messageChance) {
+          const partnerMessages = [
+            'Salut ! 👋',
+            'Comment ça va ?',
+            'D\'où viens-tu ?',
+            'Qu\'est-ce que tu fais ?',
+            'Tu es là ?',
+            'Sympa cette app !',
+            'Première fois ici ?',
+            'Quel âge as-tu ?',
+            'Tu fais quoi dans la vie ?',
+            'Il fait beau chez toi ?',
+            'Tu aimes quoi comme musique ?',
+            'Tu joues à des jeux ?',
+            'C\'est quoi tes hobbies ?',
+            'Tu étudies ou tu travailles ?',
+            'À bientôt ! 😊',
+            'Cool de te parler !',
+            'Tu connais d\'autres apps comme ça ?',
+            'Bonne journée !',
+            'Merci pour la discussion'
+          ];
+          
+          const randomMessage = partnerMessages[Math.floor(Math.random() * partnerMessages.length)];
+          
+          const newMessage: ChatMessage = {
+            id: Date.now().toString() + '_partner',
+            userId: connectedUser.id,
+            username: 'Utilisateur',
+            message: randomMessage,
+            timestamp: new Date(),
+            isOwn: false,
+          };
+          
+          setMessages(prev => [...prev, newMessage]);
         }
-    }, []);
+      }, 8000 + Math.random() * 12000); // Entre 8-20 secondes
+      
+      return () => clearInterval(messageInterval);
+    }
+  }, [isConnected, connectedUser, connectionTime]);
 
-    // Envoi de message
-    const handleSendMessage = useCallback(async () => {
-        if (!currentMessage.trim() || !currentSessionId || isSending) return;
+  const handleConnect = async (type: 'random' | 'group' | 'local') => {
+    // Disable local chat functionality temporarily
+    if (type === 'local') {
+      alert('Le chat local n\'est pas disponible actuellement. Veuillez utiliser le chat aléatoire.');
+      return;
+    }
 
-        const messageText = currentMessage.trim();
-        setCurrentMessage('');
-        setIsSending(true);
+    if (type === 'local' && !userLocation) {
+      alert('Veuillez activer la géolocalisation dans les paramètres pour utiliser le chat local.');
+      return;
+    }
 
-        try {
-            // Créer le message local immédiatement
-            const newMessage: ChatMessage = {
-                id: `local_${Date.now()}`,
-                userId: state.user?.id || 'me',
-                username: state.user?.username || 'Moi',
-                message: messageText,
-                timestamp: new Date(),
-                isOwn: true
+    setIsSearching(true);
+    setSearchAttempts(0);
+    
+    try {
+      console.log(`🔄 Démarrage de la connexion ${type}...`);
+      
+      // Mettre à jour le statut utilisateur
+      await supabaseService.updateUserStatus('chat');
+      const userId = `chat_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
+      setCurrentUserId(userId);
+      
+      // Chercher une correspondance avec le nouveau service
+      let attemptCount = 0;
+      const maxAttempts = 4;
+      
+      while (attemptCount < maxAttempts) {
+        attemptCount++;
+        setSearchAttempts(attemptCount);
+        
+        console.log(`🔍 Tentative de recherche ${attemptCount}/${maxAttempts}...`);
+        
+        const match = await realTimeChatService.findMatch(
+          userId,
+          state.user?.username || 'Anonyme',
+          'autre', // Genre par défaut
+          type,
+          userLocation ? `${userLocation.city}, ${userLocation.country}` : undefined
+        );
+        
+        if (match) {
+          // Connexion trouvée !
+          console.log('✅ Correspondance trouvée !', match);
+          
+          setIsSearching(false);
+          setIsConnected(true);
+          setConnectedUser({ id: match.id, type: 'chat', connectedAt: new Date(), isReal: true });
+          setConnectionTime(0);
+          setCanAddFriend(false);
+          setCurrentView(type);
+          setConnectedUsers(2);
+          
+          const welcomeMessage: ChatMessage = {
+            id: Date.now().toString(),
+            userId: 'system',
+            username: 'Libekoo',
+            message: `✅ Connecté avec ${match.user1_id === userId ? match.user2_pseudo : match.user1_pseudo}`,
+            timestamp: new Date(),
+            isOwn: false,
+          };
+          
+          setMessages([welcomeMessage]);
+          
+          // S'abonner aux nouveaux messages
+          realTimeChatService.subscribeToMessages(match.id, (newMessage) => {
+            console.log('📨 Nouveau message reçu dans ChatPage:', newMessage);
+            const chatMessage: ChatMessage = {
+              id: newMessage.id,
+              userId: newMessage.sender_id,
+              username: newMessage.sender_pseudo,
+              message: newMessage.message_text,
+              timestamp: new Date(newMessage.sent_at),
+              isOwn: newMessage.sender_id === userId,
             };
-
-            setMessages(prev => [...prev, newMessage]);
-
-            // Envoyer via Socket.io
-            await socketService.sendMessage(currentSessionId, messageText);
-
-            // Focus sur l'input
-            messageInputRef.current?.focus();
-        } catch (error) {
-            console.error('❌ Erreur envoi message:', error);
-            setError('Erreur d\'envoi. Réessayez.');
-            setCurrentMessage(messageText);
-        } finally {
-            setIsSending(false);
+            console.log('✅ Message converti pour affichage:', chatMessage);
+            setMessages(prev => [...prev, chatMessage]);
+          });
+          
+          return;
         }
-    }, [currentMessage, currentSessionId, isSending, state.user]);
-
-    // Gestion du clavier
-    const handleKeyPress = useCallback((e: React.KeyboardEvent) => {
-        if (e.key === 'Enter' && !e.shiftKey) {
-            e.preventDefault();
-            handleSendMessage();
+        
+        // Pas de correspondance, attendre avant de réessayer
+        if (attemptCount < maxAttempts) {
+          console.log(`⏳ Attente avant nouvelle tentative...`);
+          await new Promise(resolve => setTimeout(resolve, 3000));
         }
-    }, [handleSendMessage]);
+      }
+      
+      // Aucune correspondance trouvée après tous les essais
+      console.log('❌ Aucune correspondance trouvée après toutes les tentatives');
+      
+      await supabaseService.updateUserStatus('online');
+      setIsSearching(false);
+      setSearchAttempts(0);
+      
+      const currentHour = new Date().getHours();
+      const timeAdvice = currentHour >= 22 || currentHour <= 7 ? 
+        'Il y a moins d\'utilisateurs connectés la nuit. Essayez entre 18h et 23h.' : 
+        'Peu d\'utilisateurs disponibles actuellement.';
+        
+      alert(`Aucun utilisateur disponible pour le moment. ${timeAdvice}`);
+      
+    } catch (error) {
+      console.error('❌ Erreur de connexion:', error);
+      setIsSearching(false);
+      alert('Erreur de connexion. Vérifiez votre connexion internet.');
+    }
+  };
 
-    // Passer au suivant
-    const handleSkipUser = useCallback(async () => {
-        if (!currentSessionId) return;
+  const handleSendMessage = () => {
+    if (!currentMessage.trim() || !isConnected) return;
 
-        try {
-            await socketService.skipUser(currentSessionId);
-            setIsSearching(true);
-            setIsConnected(false);
-            setMessages([]);
-            setCurrentSessionId(null);
-            setConnectedUser(null);
-            setDistance(null);
-            setError(null);
+    const matchId = realTimeChatService.getCurrentMatchId();
+    if (!matchId) return;
 
-            // Rejoindre automatiquement la file
-            await socketService.joinQueue('chat');
-        } catch (error) {
-            console.error('❌ Erreur skip:', error);
-            setError('Erreur. Veuillez réessayer.');
-        }
-    }, [currentSessionId]);
+    console.log('📤 Envoi de message depuis ChatPage:', currentMessage.trim());
 
-    // Déconnexion
-    const handleDisconnect = useCallback((reason?: string) => {
-        setIsConnected(false);
-        setIsSearching(false);
-        setCurrentView('menu');
-        setMessages([]);
-        setCurrentSessionId(null);
-        setConnectedUser(null);
-        setDistance(null);
+    // Envoyer le message via le service temps réel
+    realTimeChatService.sendMessage(
+      matchId,
+      currentUserId,
+      state.user?.username || 'Anonyme',
+      'autre',
+      currentMessage.trim()
+    ).then(() => {
+      console.log('✅ Message envoyé avec succès');
+      
+      // Ajouter immédiatement le message à l'interface utilisateur
+      const userMessage: ChatMessage = {
+        id: Date.now().toString(),
+        userId: currentUserId,
+        username: state.user?.username || 'Anonyme',
+        message: currentMessage.trim(),
+        timestamp: new Date(),
+        isOwn: true,
+      };
+      setMessages(prev => [...prev, userMessage]);
+    }).catch((error) => {
+      console.error('❌ Erreur envoi message:', error);
+    });
 
-        if (reason) {
-            setError(reason);
-        }
+    setCurrentMessage('');
+  };
 
-        if (searchTimeout) {
-            clearTimeout(searchTimeout);
-            setSearchTimeout(null);
-        }
+  const handleKeyPress = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      handleSendMessage();
+    }
+  };
 
-        socketService.leaveQueue();
-    }, [searchTimeout]);
+  const handleDisconnect = () => {
+    const disconnect = async () => {
+      console.log('🔚 Déconnexion du chat...');
+      
+      const matchId = realTimeChatService.getCurrentMatchId();
+      if (matchId) {
+        await realTimeChatService.endMatch(matchId, currentUserId, 'user_quit');
+      }
+      
+      await supabaseService.updateUserStatus('online');
+      realTimeChatService.cleanup();
+      
+      setIsConnected(false);
+      setConnectedUser(null);
+      setMessages([]);
+      setCurrentView('menu');
+      setConnectionTime(0);
+      setCanAddFriend(false);
+      setShowAddFriend(false);
+      setConnectedUsers(0);
+      setSearchAttempts(0);
+      setCurrentUserId('');
+    };
 
-    return (
-        <div className="h-full flex flex-col overflow-hidden bg-gradient-to-br from-slate-900 via-purple-900/20 to-slate-900">
-            {/* Header */}
-            <header className="bg-black/20 backdrop-blur-sm border-b border-white/10 px-3 sm:px-4 py-3 flex-shrink-0">
-                <div className="flex items-center justify-between">
-                    <div className="flex items-center space-x-2 sm:space-x-3">
-                        <button
-                            onClick={() => currentView === 'menu' ? setPage('home') : handleDisconnect()}
-                            className="p-1.5 sm:p-2 hover:bg-white/10 rounded-lg transition-colors focus:outline-none focus:ring-2 focus:ring-cyan-400"
-                            aria-label="Retour"
-                        >
-                            <ArrowLeft className="w-4 h-4 sm:w-5 sm:h-5 text-white" />
-                        </button>
-                        <div className="flex-1 min-w-0">
-                            <h1 className="text-base sm:text-lg font-semibold text-white truncate">
-                                Chat Textuel
-                            </h1>
-                            {connectedUser && (
-                                <div className="flex items-center space-x-2 text-xs text-gray-400">
-                                    <span className="truncate">{connectedUser.username}</span>
-                                    {connectedUser.location?.city && (
-                                        <>
-                                            <span>•</span>
-                                            <div className="flex items-center space-x-1">
-                                                <MapPin className="w-3 h-3" />
-                                                <span className="truncate">
-                                                    {connectedUser.location.city}
-                                                    {distance !== null && distance !== undefined && distance < 1000 && (
-                                                        <span className="text-cyan-400"> ({Math.round(distance)}km)</span>
-                                                    )}
-                                                </span>
-                                            </div>
-                                        </>
-                                    )}
-                                </div>
-                            )}
-                        </div>
-                    </div>
+    disconnect();
+  };
 
-                    <div className="flex items-center space-x-2">
-                        {userLocation?.city && (
-                            <div className="hidden sm:flex items-center space-x-1 text-xs text-gray-400">
-                                <Globe className="w-3 h-3" />
-                                <span className="truncate max-w-[100px]">{userLocation.city}</span>
-                            </div>
-                        )}
+  const handleSkipUser = async () => {
+    if (isSearching) return;
+    
+    console.log('⏭️ Passage à l\'utilisateur suivant...');
+    
+    const matchId = realTimeChatService.getCurrentMatchId();
+    if (matchId) {
+      await realTimeChatService.endMatch(matchId, currentUserId, 'skip');
+    }
+    
+    setMessages([]);
+    setConnectionTime(0);
+    setCanAddFriend(false);
+    setShowAddFriend(false);
+    setIsConnected(false);
+    setConnectedUser(null);
+    
+    // Chercher un nouvel utilisateur
+    await handleConnect(currentView);
+  };
 
-                        {isConnected && (
-                            <div className="flex items-center space-x-1 text-green-400" aria-live="polite">
-                                <div className="w-2 h-2 bg-green-400 rounded-full animate-pulse" aria-hidden="true" />
-                                <span className="text-xs sm:text-sm">Live</span>
-                            </div>
-                        )}
-                    </div>
+  const handleAddFriend = () => {
+    if (!state.user || state.user.isAnonymous) {
+      alert('Vous devez être connecté à un compte pour ajouter des amis.');
+      return;
+    }
+    
+    setShowAddFriend(true);
+    
+    setTimeout(() => {
+      setShowAddFriend(false);
+      const friendMessage: ChatMessage = {
+        id: Date.now().toString() + '_friend',
+        userId: 'system',
+        username: 'Libekoo',
+        message: '✅ Demande d\'ami envoyée',
+        timestamp: new Date(),
+        isOwn: false,
+      };
+      setMessages(prev => [...prev, friendMessage]);
+    }, 1500);
+  };
+
+  const formatTime = (seconds: number) => {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+  };
+
+  const getSearchStatusText = () => {
+    if (searchAttempts === 0) return 'Recherche d\'utilisateurs réels...';
+    return `Recherche... Tentative ${searchAttempts}/4`;
+  };
+
+  // Afficher la page de chat randomisé si sélectionnée
+  if (currentView === 'random_chat') {
+    return <RandomChatPage />;
+  }
+
+  return (
+    <div className="h-full flex flex-col overflow-hidden">
+      {/* Header */}
+      <div className="bg-black/20 backdrop-blur-sm border-b border-white/10 p-4 flex-shrink-0">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center space-x-4">
+            <button
+              onClick={() => isConnected ? handleDisconnect() : setPage('home')}
+              className="p-2 hover:bg-white/10 rounded-lg transition-colors duration-200"
+            >
+              <ArrowLeft className="w-5 h-5 text-white" />
+            </button>
+            <h1 className="text-xl font-semibold text-white">
+              {currentView === 'random' ? 'Chat Aléatoire' :
+               currentView === 'local' ? 'Chat Local' : 'Chat LiberTalk'}
+            </h1>
+          </div>
+          <div className="flex items-center space-x-4">
+            {userLocation && (
+              <div className="flex items-center space-x-1 text-cyan-400 text-sm">
+                <MapPin className="w-4 h-4" />
+                <span>{userLocation.city}, {userLocation.country}</span>
+              </div>
+            )}
+            {isConnected && (
+              <div className="text-cyan-400 font-mono text-sm">
+                {formatTime(connectionTime)}
+              </div>
+            )}
+            {(connectedUsers > 0 || isSearching) && (
+              <div className="flex items-center space-x-2 text-cyan-400">
+                <Users className="w-4 h-4" />
+                <span className="text-sm">
+                  {isSearching ? `${waitingCounts.chat} en attente` : `${connectedUsers} connectés`}
+                </span>
+              </div>
+            )}
+            {isConnected && connectedUser && (
+              <div className="flex items-center space-x-1 text-green-400 text-xs">
+                <div className="w-2 h-2 bg-green-400 rounded-full animate-pulse" />
+                <span>Live</span>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* Main Content */}
+      <div className="flex-1 flex flex-col min-h-0">
+        {currentView === 'menu' && (
+          <div className="flex-1 overflow-y-auto custom-scroll">
+            <div className="p-3 sm:p-4 md:p-6 space-y-4 sm:space-y-6 md:space-y-8 max-w-6xl mx-auto pb-16 sm:pb-20">
+              <div className="text-center">
+                <h2 className="text-lg sm:text-xl md:text-2xl font-semibold text-white mb-2">
+                  Choisissez votre mode de connexion
+                </h2>
+                <p className="text-gray-300 text-xs sm:text-sm md:text-base">
+                  Rencontrez de vraies personnes dans le monde entier
+                </p>
+              </div>
+
+              {/* Stats en temps réel */}
+              <div className="stats-container">
+                <div className="text-center">
+                  <div className="text-cyan-400 font-bold text-base sm:text-lg live-indicator">{waitingCounts.chat}</div>
+                  <div className="text-gray-400 text-xs">Chat</div>
                 </div>
-            </header>
-
-            {/* Message d'erreur */}
-            {error && (
-                <div className="bg-red-500/10 border-b border-red-500/20 px-4 py-2" role="alert">
-                    <div className="flex items-center space-x-2 text-red-300">
-                        <AlertCircle className="w-4 h-4 flex-shrink-0" />
-                        <p className="text-xs sm:text-sm flex-1">{error}</p>
-                        <button
-                            onClick={() => setError(null)}
-                            className="text-red-400 hover:text-red-300 p-1"
-                            aria-label="Fermer l'alerte"
-                        >
-                            ✕
-                        </button>
-                    </div>
+                <div className="text-center">
+                  <div className="text-purple-400 font-bold text-base sm:text-lg live-indicator">{waitingCounts.video}</div>
+                  <div className="text-gray-400 text-xs">Vidéo</div>
                 </div>
+                <div className="text-center">
+                  <div className="text-green-400 font-bold text-base sm:text-lg live-indicator">{waitingCounts.group}</div>
+                  <div className="text-gray-400 text-xs">Groupes</div>
+                </div>
+              </div>
+              <div className="text-center">
+                <p className="text-gray-400 text-xs">Utilisateurs en attente de connexion • Mis à jour toutes les 30s</p>
+              </div>
+
+              {/* Chat Options */}
+              <div className="responsive-grid">
+                {/* Random Chat */}
+                <button
+                  onClick={() => handleConnect('random')}
+                  className="responsive-card rounded-xl border border-white/20 bg-white/5 hover:border-cyan-400 hover:bg-cyan-400/10 transition-all duration-300 group hover-glow"
+                >
+                  <div className="text-center space-y-3 md:space-y-4">
+                    <div className="w-10 h-10 sm:w-12 sm:h-12 md:w-16 md:h-16 mx-auto bg-gradient-to-br from-cyan-400 to-blue-500 rounded-full flex items-center justify-center group-hover:scale-110 transition-transform duration-300">
+                      <MessageCircle className="w-5 h-5 sm:w-6 sm:h-6 md:w-8 md:h-8 text-white" />
+                    </div>
+                    <div>
+                      <h3 className="text-white font-semibold text-sm sm:text-base md:text-lg mb-2">Chat Aléatoire</h3>
+                      <p className="text-gray-400 text-xs sm:text-sm">
+                        Discutez avec quelqu'un de complètement nouveau
+                      </p>
+                      <div className="mt-2 text-cyan-400 text-xs live-indicator">
+                        {waitingCounts.chat} utilisateurs en attente
+                      </div>
+                    </div>
+                  </div>
+                </button>
+
+                <button
+                  onClick={() => setCurrentView('random_chat')}
+                  className="responsive-card rounded-xl border border-white/20 bg-white/5 hover:border-pink-400 hover:bg-pink-400/10 transition-all duration-300 group hover-glow"
+                >
+                  <div className="text-center space-y-3 md:space-y-4">
+                    <div className="w-10 h-10 sm:w-12 sm:h-12 md:w-16 md:h-16 mx-auto bg-gradient-to-br from-pink-400 to-purple-500 rounded-full flex items-center justify-center group-hover:scale-110 transition-transform duration-300">
+                      <Shuffle className="w-5 h-5 sm:w-6 sm:h-6 md:w-8 md:h-8 text-white" />
+                    </div>
+                    <div>
+                      <h3 className="text-white font-semibold text-sm sm:text-base md:text-lg mb-2">Chat Randomisé</h3>
+                      <p className="text-gray-400 text-xs sm:text-sm">
+                        Chat avec pseudo et genre, autoswitch disponible
+                      </p>
+                      <div className="mt-2 text-pink-400 text-xs">
+                        Messages colorés par genre
+                      </div>
+                    </div>
+                  </div>
+                </button>
+
+                {/* Local Chat */}
+                <button
+                  onClick={() => handleConnect('local')}
+                  disabled={!userLocation}
+                  className="responsive-card rounded-xl border border-white/20 bg-white/5 hover:border-green-400 hover:bg-green-400/10 transition-all duration-300 group disabled:opacity-50 disabled:cursor-not-allowed hover-glow col-span-1 sm:col-span-2 lg:col-span-1"
+                >
+                  <div>
+                    <div className="text-center space-y-3 md:space-y-4">
+                      <div className="w-10 h-10 sm:w-12 sm:h-12 md:w-16 md:h-16 mx-auto bg-gradient-to-br from-green-400 to-emerald-500 rounded-full flex items-center justify-center group-hover:scale-110 transition-transform duration-300">
+                        <Globe className="w-5 h-5 sm:w-6 sm:h-6 md:w-8 md:h-8 text-white" />
+                      </div>
+                      <div>
+                        <h3 className="text-white font-semibold text-sm sm:text-base md:text-lg mb-2">Chat Local</h3>
+                        <p className="text-gray-400 text-xs sm:text-sm">
+                          {userLocation ? 'Rencontrez des personnes près de chez vous' : 'Activez la localisation dans les paramètres'}
+                        </p>
+                        {userLocation && (
+                          <div className="mt-2 text-green-400 text-xs">
+                            Disponible dans votre région
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                </button>
+              </div>
+
+              {/* Groups Quick Access */}
+              <div className="bg-gradient-to-r from-purple-500/10 to-pink-500/10 border border-purple-500/20 rounded-xl p-4 sm:p-6">
+                <h3 className="text-base sm:text-lg font-semibold text-white mb-3 flex items-center">
+                  <Users className="w-5 h-5 mr-2 text-purple-400" />
+                  Groupes de Discussion
+                </h3>
+                <p className="text-gray-300 text-xs sm:text-sm mb-4">
+                  Rejoignez des conversations thématiques avec plusieurs utilisateurs
+                </p>
+                <div className="flex flex-col sm:flex-row items-center justify-between space-y-2 sm:space-y-0">
+                  <button
+                    onClick={() => setPage('groups')}
+                    className="w-full sm:w-auto mobile-button px-4 py-3 bg-gradient-to-r from-purple-500 to-pink-600 text-white rounded-lg hover:from-purple-400 hover:to-pink-500 transition-all duration-300 font-medium"
+                  >
+                    Voir tous les groupes
+                  </button>
+                  <div className="text-purple-400 text-xs sm:text-sm live-indicator">
+                    {waitingCounts.group} groupes actifs
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Searching State */}
+        {isSearching && (
+          <div className="flex-1 flex items-center justify-center">
+            <div className="text-center space-y-4 p-4">
+              <div className="w-16 h-16 border-4 border-cyan-400 border-t-transparent rounded-full animate-spin mx-auto" 
+                   style={{ animationDuration: '1.2s' }} />
+              <p className="text-white text-base sm:text-lg">{getSearchStatusText()}</p>
+              <p className="text-gray-400 text-sm">
+                Recherche de vrais utilisateurs disponibles...
+              </p>
+              <div className="text-cyan-400 text-xs sm:text-sm live-indicator">
+                {waitingCounts.chat} vrais utilisateurs en attente
+              </div>
+              {searchAttempts > 2 && (
+                <p className="text-yellow-400 text-xs sm:text-sm">
+                  Peu de vrais utilisateurs disponibles actuellement
+                </p>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Chat Interface */}
+        {isConnected && (
+          <>
+            {/* Messages */}
+            <div className="messages-container space-y-4 custom-scroll">
+              {messages.map((message) => (
+                <div
+                  key={message.id}
+                  className={`flex ${message.isOwn ? 'justify-end' : 'justify-start'} message-enter`}
+                >
+                  <div
+                    className={`max-w-xs sm:max-w-sm lg:max-w-md px-3 sm:px-4 py-2 rounded-2xl transition-all duration-200 ${
+                      message.isOwn
+                        ? 'bg-gradient-to-r from-cyan-500 to-blue-600 text-white'
+                        : message.userId === 'system'
+                        ? 'bg-green-500/20 text-green-300 border border-green-500/30'
+                        : 'bg-white/10 text-white border border-white/20'
+                    }`}
+                  >
+                    {!message.isOwn && message.userId !== 'system' && (
+                      <p className="text-xs opacity-70 mb-1">{message.username}</p>
+                    )}
+                    <p className="text-xs sm:text-sm">{message.message}</p>
+                    <p className="text-xs opacity-60 mt-1">
+                      {message.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                    </p>
+                  </div>
+                </div>
+              ))}
+              <div ref={messagesEndRef} />
+            </div>
+
+            {/* Chat Controls */}
+            {currentView === 'random' && (
+              <div className="bg-black/10 backdrop-blur-sm border-t border-white/10 px-3 sm:px-4 py-2 flex-shrink-0">
+                <div className="flex items-center justify-center space-x-2 sm:space-x-4">
+                  <button
+                    onClick={handleSkipUser}
+                    disabled={isSearching}
+                    className="flex items-center space-x-1 sm:space-x-2 mobile-button px-3 sm:px-4 py-2 bg-yellow-500/20 text-yellow-400 rounded-lg hover:bg-yellow-500/30 transition-all duration-200 disabled:opacity-50"
+                  >
+                    <SkipForward className="w-4 h-4" />
+                    <span className="text-xs sm:text-sm">
+                      {isSearching ? 'Recherche...' : 'Suivant'}
+                    </span>
+                  </button>
+                  {canAddFriend && (
+                    <button
+                      onClick={handleAddFriend}
+                      disabled={showAddFriend}
+                      className="flex items-center space-x-1 sm:space-x-2 mobile-button px-3 sm:px-4 py-2 bg-green-500/20 text-green-400 rounded-lg hover:bg-green-500/30 transition-all duration-200 disabled:opacity-50"
+                    >
+                      <UserPlus className="w-4 h-4" />
+                      <span className="text-xs sm:text-sm">
+                        {showAddFriend ? 'Envoi...' : 'Ajouter ami'}
+                      </span>
+                    </button>
+                  )}
+                </div>
+              </div>
             )}
 
-            {/* Contenu principal */}
-            <main className="flex-1 flex flex-col min-h-0">
-                {/* Menu de sélection */}
-                {currentView === 'menu' && (
-                    <div className="flex-1 overflow-y-auto p-4 sm:p-6">
-                        <div className="max-w-2xl mx-auto space-y-4 sm:space-y-6">
-                            <div className="text-center">
-                                <h2 className="text-xl sm:text-2xl font-semibold text-white mb-2">
-                                    Chat Instantané
-                                </h2>
-                                <p className="text-sm sm:text-base text-gray-300">
-                                    Connexion prioritaire avec les utilisateurs proches de vous
-                                </p>
-                                {userLocation?.city && (
-                                    <div className="flex items-center justify-center space-x-2 mt-2 text-cyan-400 text-sm">
-                                        <MapPin className="w-4 h-4" />
-                                        <span>Votre position: {userLocation.city}, {userLocation.country}</span>
-                                    </div>
-                                )}
-                            </div>
-
-                            {/* Option Chat Aléatoire */}
-                            <button
-                                onClick={() => handleConnect('random')}
-                                className="w-full p-4 sm:p-6 rounded-xl border border-white/20 bg-white/5 hover:border-cyan-400 hover:bg-cyan-400/10 transition-all duration-300 group focus:outline-none focus:ring-2 focus:ring-cyan-400"
-                                aria-label="Commencer un chat aléatoire"
-                            >
-                                <div className="text-center space-y-3">
-                                    <div className="w-12 h-12 sm:w-16 sm:h-16 mx-auto bg-gradient-to-br from-cyan-400 to-blue-500 rounded-full flex items-center justify-center group-hover:scale-110 transition-transform">
-                                        <MessageCircle className="w-6 h-6 sm:w-8 sm:h-8 text-white" />
-                                    </div>
-                                    <h3 className="text-lg sm:text-xl font-semibold text-white">
-                                        Lancer un Chat
-                                    </h3>
-                                    <p className="text-sm text-gray-300">
-                                        Connectez-vous avec quelqu'un près de chez vous
-                                    </p>
-                                    <div className="flex items-center justify-center space-x-2 text-xs text-cyan-400">
-                                        <Globe className="w-4 h-4" />
-                                        <span>Matching par géolocalisation activé</span>
-                                    </div>
-                                </div>
-                            </button>
-                        </div>
-                    </div>
-                )}
-
-                {/* État de recherche */}
-                {isSearching && (
-                    <div className="flex-1 flex items-center justify-center p-4">
-                        <div className="text-center space-y-4" role="status" aria-live="polite">
-                            <Loader2 className="w-12 h-12 sm:w-16 sm:h-16 text-cyan-400 animate-spin mx-auto" />
-                            <p className="text-white text-base sm:text-lg">
-                                Recherche d'un utilisateur près de vous...
-                            </p>
-                            {userLocation?.city && (
-                                <p className="text-gray-400 text-xs sm:text-sm">
-                                    Priorité: {userLocation.city}, {userLocation.country}
-                                </p>
-                            )}
-                        </div>
-                    </div>
-                )}
-
-                {/* Interface de chat */}
-                {isConnected && (
-                    <>
-                        {/* Zone des messages */}
-                        <div className="flex-1 overflow-y-auto p-3 sm:p-4 space-y-2 sm:space-y-3" role="log" aria-label="Messages">
-                            {messages.map((message) => (
-                                <div
-                                    key={message.id}
-                                    className={`flex ${message.isOwn ? 'justify-end' : 'justify-start'} animate-fade-in`}
-                                >
-                                    <div
-                                        className={`max-w-[85%] sm:max-w-xs md:max-w-sm lg:max-w-md px-3 sm:px-4 py-2 rounded-2xl ${message.isOwn
-                                                ? 'bg-gradient-to-r from-cyan-500 to-blue-600 text-white'
-                                                : message.userId === 'system'
-                                                    ? 'bg-green-500/20 text-green-300 border border-green-500/30'
-                                                    : 'bg-white/10 text-white border border-white/20'
-                                            }`}
-                                    >
-                                        {!message.isOwn && message.userId !== 'system' && (
-                                            <p className="text-xs opacity-70 mb-1">{message.username}</p>
-                                        )}
-                                        <p className="text-sm sm:text-base break-words">{message.message}</p>
-                                        <p className="text-xs opacity-60 mt-1">
-                                            {message.timestamp.toLocaleTimeString([], {
-                                                hour: '2-digit',
-                                                minute: '2-digit'
-                                            })}
-                                        </p>
-                                    </div>
-                                </div>
-                            ))}
-                            <div ref={messagesEndRef} />
-                        </div>
-
-                        {/* Contrôles du chat */}
-                        <div className="bg-black/10 backdrop-blur-sm border-t border-white/10 p-2 sm:p-3 space-y-2">
-                            {/* Bouton Suivant */}
-                            <div className="flex justify-center">
-                                <button
-                                    onClick={handleSkipUser}
-                                    className="flex items-center space-x-2 px-3 sm:px-4 py-1.5 sm:py-2 bg-yellow-500/20 text-yellow-400 rounded-lg hover:bg-yellow-500/30 transition-all text-sm focus:outline-none focus:ring-2 focus:ring-yellow-400"
-                                    aria-label="Passer au suivant"
-                                >
-                                    <SkipForward className="w-4 h-4" />
-                                    <span>Suivant</span>
-                                </button>
-                            </div>
-
-                            {/* Zone de saisie */}
-                            <div className="flex space-x-2">
-                                <input
-                                    ref={messageInputRef}
-                                    type="text"
-                                    value={currentMessage}
-                                    onChange={(e) => setCurrentMessage(e.target.value)}
-                                    onKeyPress={handleKeyPress}
-                                    placeholder="Tapez votre message..."
-                                    maxLength={1000}
-                                    disabled={isSending}
-                                    className="flex-1 bg-white/10 border border-white/20 rounded-full px-3 sm:px-4 py-2 text-sm sm:text-base text-white placeholder-gray-400 focus:outline-none focus:border-cyan-400 transition-colors disabled:opacity-50"
-                                    aria-label="Message"
-                                    autoComplete="off"
-                                    autoCapitalize="sentences"
-                                    autoFocus
-                                />
-                                <button
-                                    onClick={handleSendMessage}
-                                    disabled={!currentMessage.trim() || isSending}
-                                    className="p-2 bg-gradient-to-r from-cyan-500 to-blue-600 text-white rounded-full hover:from-cyan-400 hover:to-blue-500 disabled:opacity-50 disabled:cursor-not-allowed transition-all focus:outline-none focus:ring-2 focus:ring-cyan-400"
-                                    aria-label="Envoyer le message"
-                                >
-                                    {isSending ? (
-                                        <Loader2 className="w-4 h-4 sm:w-5 sm:h-5 animate-spin" />
-                                    ) : (
-                                        <Send className="w-4 h-4 sm:w-5 sm:h-5" />
-                                    )}
-                                </button>
-                            </div>
-                        </div>
-                    </>
-                )}
-            </main>
-        </div>
-    );
+            {/* Message Input */}
+            <div className="message-input-container flex-shrink-0">
+              <div className="flex space-x-2">
+                <input
+                  type="text"
+                  value={currentMessage}
+                  onChange={(e) => setCurrentMessage(e.target.value)}
+                  onKeyPress={handleKeyPress}
+                  placeholder="Tapez votre message..."
+                  maxLength={500}
+                  className="flex-1 bg-white/10 border border-white/20 rounded-full px-3 sm:px-4 py-2 sm:py-3 text-white placeholder-gray-400 focus:outline-none focus:border-cyan-400 transition-colors duration-200 text-sm sm:text-base"
+                />
+                <button
+                  onClick={handleSendMessage}
+                  disabled={!currentMessage.trim()}
+                  className="p-2 sm:p-3 bg-gradient-to-r from-cyan-500 to-blue-600 text-white rounded-full hover:from-cyan-400 hover:to-blue-500 disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-200"
+                >
+                  <Send className="w-4 h-4 sm:w-5 sm:h-5" />
+                </button>
+              </div>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
 }

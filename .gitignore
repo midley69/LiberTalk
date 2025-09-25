@@ -1,23 +1,25 @@
-module.exports = {
-  apps: [{
-    name: 'libekoo',
-    script: './server.js',
-    instances: 1,
-    exec_mode: 'cluster',
-    autorestart: true,
-    watch: false,
-    max_memory_restart: '1G',
-    error_file: './logs/error.log',
-    out_file: './logs/output.log',
-    merge_logs: true,
-    time: true,
-    env: {
-      NODE_ENV: 'production',
-      PORT: 3000
-    },
-    env_development: {
-      NODE_ENV: 'development',
-      PORT: 3000
-    }
-  }]
-};
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+*.local
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+.env

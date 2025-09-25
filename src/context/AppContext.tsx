@@ -5,6 +5,7 @@ interface AppContextType {
   state: AppState;
   setPage: (page: AppPage) => void;
   setUser: (user: User | null) => void;
+  setOnlineUsers: (count: number) => void;
   setCurrentChat: (chat: ChatRoom | null) => void;
   setCurrentCall: (call: VideoCall | null) => void;
 }
@@ -14,12 +15,14 @@ const AppContext = createContext<AppContextType | undefined>(undefined);
 type AppAction =
   | { type: 'SET_PAGE'; payload: AppPage }
   | { type: 'SET_USER'; payload: User | null }
+  | { type: 'SET_ONLINE_USERS'; payload: number }
   | { type: 'SET_CURRENT_CHAT'; payload: ChatRoom | null }
   | { type: 'SET_CURRENT_CALL'; payload: VideoCall | null };
 
 const initialState: AppState = {
   currentPage: 'home',
   user: null,
+  onlineUsers: 116,
   currentChat: null,
   currentCall: null,
 };
@@ -30,6 +33,8 @@ function appReducer(state: AppState, action: AppAction): AppState {
       return { ...state, currentPage: action.payload };
     case 'SET_USER':
       return { ...state, user: action.payload };
+    case 'SET_ONLINE_USERS':
+      return { ...state, onlineUsers: action.payload };
     case 'SET_CURRENT_CHAT':
       return { ...state, currentChat: action.payload };
     case 'SET_CURRENT_CALL':
@@ -44,6 +49,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const setPage = (page: AppPage) => dispatch({ type: 'SET_PAGE', payload: page });
   const setUser = (user: User | null) => dispatch({ type: 'SET_USER', payload: user });
+  const setOnlineUsers = (count: number) => dispatch({ type: 'SET_ONLINE_USERS', payload: count });
   const setCurrentChat = (chat: ChatRoom | null) => dispatch({ type: 'SET_CURRENT_CHAT', payload: chat });
   const setCurrentCall = (call: VideoCall | null) => dispatch({ type: 'SET_CURRENT_CALL', payload: call });
 
@@ -52,6 +58,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       state,
       setPage,
       setUser,
+      setOnlineUsers,
       setCurrentChat,
       setCurrentCall,
     }}>

@@ -6,15 +6,9 @@ import { VideoCallPage } from './components/VideoCallPage';
 import { GroupsPage } from './components/GroupsPage';
 import { SettingsPage } from './components/SettingsPage';
 import { Navigation } from './components/Navigation';
-import { TestPage } from './components/TestPage';
 
 function AppContent() {
   const { state } = useApp();
-  
-  const urlParams = new URLSearchParams(window.location.search);
-  if (urlParams.get('test') === 'true') {
-    return <TestPage />;
-  }
 
   const renderCurrentPage = () => {
     switch (state.currentPage) {
