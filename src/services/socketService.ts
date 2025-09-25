@@ -20,6 +20,7 @@ class SocketService {
   private static instance: SocketService;
   private socket: Socket | null = null;
   private currentUser: User | null = null;
+  private userLocation: any = { city: 'Unknown', country: 'Unknown' };
 
   static getInstance(): SocketService {
     if (!SocketService.instance) {
@@ -31,7 +32,6 @@ class SocketService {
   async connect(): Promise<void> {
     if (this.socket?.connected) return;
 
-    // Utiliser l'IP du serveur directement
     const serverUrl = window.location.hostname === 'localhost' 
       ? 'http://localhost:3000'
       : `http://${window.location.hostname}:3000`;
@@ -80,7 +80,8 @@ class SocketService {
     });
   }
 
-  findChatPartner(): Promise<any> {
+  // Méthodes Chat
+  async findChatPartner(): Promise<any> {
     return new Promise((resolve, reject) => {
       if (!this.socket) {
         reject(new Error('Socket non connecté'));
@@ -95,6 +96,27 @@ class SocketService {
         }
       });
     });
+  }
+
+  async joinQueue(type: string): Promise<void> {
+    return this.findChatPartner().then(() => {});
+  }
+
+  leaveQueue(): void {
+    // Fonction vide pour compatibilité
+  }
+
+  async skipUser(sessionId: string): Promise<void> {
+    this.skipChat(sessionId);
+    return Promise.resolve();
+  }
+
+  getUserLocation(): any {
+    return this.userLocation;
+  }
+
+  async getMessageHistory(sessionId: string): Promise<any[]> {
+    return [];
   }
 
   sendMessage(sessionId: string, message: string): Promise<void> {
@@ -117,6 +139,11 @@ class SocketService {
     });
   }
 
+  // Listeners Chat
+  onMatchFound(callback: (data: any) => void) {
+    this.socket?.on('chat:matched', callback);
+  }
+
   onChatMatched(callback: (data: any) => void) {
     this.socket?.on('chat:matched', callback);
   }
@@ -135,7 +162,15 @@ class SocketService {
     });
   }
 
+  onMessageReceive(callback: (message: any) => void) {
+    this.onMessageReceived(callback);
+  }
+
   onChatEnded(callback: (data: any) => void) {
+    this.socket?.on('chat:ended', callback);
+  }
+
+  onSessionEnded(callback: () => void) {
     this.socket?.on('chat:ended', callback);
   }
 
@@ -143,6 +178,7 @@ class SocketService {
     this.socket?.emit('chat:skip', { sessionId });
   }
 
+  // Méthodes Groupes
   createGroup(name: string, description: string): Promise<any> {
     return new Promise((resolve, reject) => {
       if (!this.socket) {
@@ -248,3 +284,4 @@ class SocketService {
 }
 
 export default SocketService;
+export type { User, ChatMessage };
