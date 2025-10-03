@@ -202,17 +202,14 @@ export function HomePage() {
           </div>
         </div>
 
-        {/* Online Users Counter - Bottom */}
+        {/* Privacy Message - Bottom */}
         <div className="flex-shrink-0 pb-16 sm:pb-20 px-4">
-          <div className="flex items-center justify-center space-x-2 text-cyan-400 animate-fade-in">
-            <Users className="w-4 h-4 sm:w-5 sm:h-5" />
-            <span className="text-base sm:text-lg font-medium live-indicator">
-              {state.onlineUsers} utilisateurs en ligne
-            </span>
-          </div>
-          <div className="text-center mt-2">
+          <div className="text-center">
             <p className="text-gray-400 text-xs sm:text-sm animate-fade-in">
               🔴 SANS BOTS • Connexions 100% authentiques • Communauté réelle • Temps réel
+            </p>
+            <p className="text-gray-500 text-xs mt-2">
+              🔒 Plateforme anonyme et sécurisée
             </p>
           </div>
         </div>
