@@ -91,7 +91,7 @@ class SupabaseService {
           last_seen: new Date().toISOString()
         })
         .select()
-        .single();
+        .maybeSingle();
 
       if (error) {
         console.error('❌ Erreur lors de l\'insertion utilisateur:', error);
@@ -282,7 +282,7 @@ class SupabaseService {
           created_by: createdBy
         })
         .select()
-        .single();
+        .maybeSingle();
 
       if (error) {
         console.error('❌ Erreur lors de la création du groupe:', error);
@@ -361,7 +361,7 @@ class SupabaseService {
         .select('member_count')
         .eq('id', groupId)
         .eq('is_active', true)
-        .single();
+        .maybeSingle();
 
       if (error || !data) {
         console.error('❌ Groupe non trouvé ou inactif:', error);
@@ -411,7 +411,7 @@ class SupabaseService {
         .from('groups')
         .select('member_count')
         .eq('id', groupId)
-        .single();
+        .maybeSingle();
 
       if (error || !data) {
         console.error('❌ Groupe non trouvé:', error);

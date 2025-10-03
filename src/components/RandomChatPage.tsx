@@ -174,7 +174,7 @@ export function RandomChatPage() {
           last_seen: new Date().toISOString()
         })
         .select()
-        .single();
+        .maybeSingle();
 
       if (userError) {
         console.error('❌ Erreur création utilisateur:', userError);
@@ -262,7 +262,7 @@ export function RandomChatPage() {
             .from('random_chat_sessions')
             .select('*')
             .eq('id', sessionData)
-            .single();
+            .maybeSingle();
 
           if (loadError) {
             console.error('❌ Erreur chargement session:', loadError);
@@ -408,7 +408,7 @@ export function RandomChatPage() {
         .from('random_chat_sessions')
         .select('*')
         .eq('id', newSessionId)
-        .single();
+        .maybeSingle();
 
       if (!error && newSession) {
         setCurrentSession(newSession);
