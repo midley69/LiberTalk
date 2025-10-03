@@ -251,7 +251,7 @@ export function GroupsPage() {
     return minutesLeft > 0 ? `${minutesLeft}min` : 'Expire bientôt';
   };
 
-  const formatGroupForDisplay = (group: GroupRoom) => {
+  const formatGroupForDisplay = (group: Group) => {
     return {
       id: group.id,
       name: group.name,
@@ -272,13 +272,14 @@ export function GroupsPage() {
     setShowAddFriend(true);
     setTimeout(() => {
       setShowAddFriend(false);
-      const friendMessage: ChatMessage = {
+      const friendMessage: GroupMessage = {
         id: Date.now().toString() + '_friend',
-        userId: 'system',
-        username: 'Libekoo',
-        message: 'Demandes d\'ami envoyées aux membres actifs',
-        timestamp: new Date(),
-        isOwn: false,
+        group_id: selectedGroup?.id || '',
+        sender_id: 'system',
+        sender_name: 'Libekoo',
+        message_text: 'Demandes d\'ami envoyées aux membres actifs',
+        message_type: 'system',
+        sent_at: new Date().toISOString()
       };
       setMessages(prev => [...prev, friendMessage]);
     }, 1500);
@@ -318,10 +319,10 @@ export function GroupsPage() {
                 {formatTime(connectionTime)}
               </div>
             )}
-            {connectedUsers > 0 && (
+            {memberCount > 0 && (
               <div className="flex items-center space-x-2 text-cyan-400">
                 <Users className="w-4 h-4" />
-                <span className="text-sm">{connectedUsers} connectés</span>
+                <span className="text-sm">{memberCount} membres</span>
               </div>
             )}
           </div>
