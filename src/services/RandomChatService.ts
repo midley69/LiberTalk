@@ -1,4 +1,4 @@
-import { api, socketManager } from '../lib/localApi';
+import { supabase } from '../lib/supabase';
 
 export interface RandomChatUser {
   user_id: string;
@@ -53,11 +53,20 @@ class RandomChatService {
   async createUser(pseudo: string, genre: 'homme' | 'femme' | 'autre', autoswitchEnabled: boolean): Promise<RandomChatUser> {
     const userId = `random_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
 
-    const data = await api.createUser({
-      pseudo: pseudo.trim(),
-      genre,
-      autoswitchEnabled
-    });
+    const { data, error } = await supabase
+      .from('random_chat_users')
+      .upsert({
+        user_id: userId,
+        pseudo: pseudo.trim(),
+        genre,
+        status: 'en_attente',
+        autoswitch_enabled: autoswitchEnabled,
+        last_seen: new Date().toISOString()
+      })
+      .select()
+      .maybeSingle();
+
+    if (error) throw error;
 
     this.currentUserId = userId;
     this.startHeartbeat();
@@ -67,12 +76,17 @@ class RandomChatService {
 
   // Chercher un partenaire
   async findPartner(userId: string, locationFilter?: string): Promise<RandomChatUser | null> {
-    const data = await api.findPartner(userId, locationFilter);
+    const { data, error } = await supabase.rpc('find_random_chat_partner', {
+      requesting_user_id: userId,
+      p_location_filter: locationFilter
+    });
 
-    return data && data.partner_user_id ? {
-      user_id: data.partner_user_id,
-      pseudo: data.partner_pseudo,
-      genre: data.partner_genre,
+    if (error) throw error;
+
+    return data && data.length > 0 ? {
+      user_id: data[0].partner_user_id,
+      pseudo: data[0].partner_pseudo,
+      genre: data[0].partner_genre,
       status: 'en_attente',
       autoswitch_enabled: false,
       last_seen: new Date().toISOString()
@@ -84,7 +98,7 @@ class RandomChatService {
     user1: RandomChatUser,
     user2: RandomChatUser
   ): Promise<string> {
-    const data = await api.createSession({
+    const { data, error } = await supabase.rpc('create_random_chat_session', {
       user1_id: user1.user_id,
       user1_pseudo: user1.pseudo,
       user1_genre: user1.genre,
@@ -93,7 +107,8 @@ class RandomChatService {
       user2_genre: user2.genre
     });
 
-    return data.sessionId;
+    if (error) throw error;
+    return data;
   }
 
   // Envoyer un message
@@ -104,49 +119,73 @@ class RandomChatService {
     senderGenre: string,
     messageText: string
   ): Promise<void> {
-    socketManager.sendMessage({
-      sessionId,
-      senderId,
-      senderPseudo,
-      senderGenre,
-      messageText: messageText.trim()
-    });
+    const { error } = await supabase
+      .from('random_chat_messages')
+      .insert({
+        session_id: sessionId,
+        sender_id: senderId,
+        sender_pseudo: senderPseudo,
+        sender_genre: senderGenre,
+        message_text: messageText.trim()
+      });
+
+    if (error) throw error;
   }
 
   // Charger les messages d'une session
   async loadMessages(sessionId: string): Promise<RandomChatMessage[]> {
-    const data = await api.loadMessages(sessionId);
+    const { data, error } = await supabase
+      .from('random_chat_messages')
+      .select('*')
+      .eq('session_id', sessionId)
+      .order('sent_at', { ascending: true });
+
+    if (error) throw error;
     return data || [];
   }
 
   // Terminer une session
   async endSession(sessionId: string, endedByUserId: string, endReason: string): Promise<void> {
-    await api.endSession(sessionId, endedByUserId, endReason);
+    const { error } = await supabase.rpc('end_random_chat_session', {
+      session_id: sessionId,
+      ended_by_user_id: endedByUserId,
+      end_reason: endReason
+    });
+
+    if (error) throw error;
   }
 
   // Obtenir les statistiques
   async getStats(): Promise<any> {
-    return await api.getStats();
+    const { data, error } = await supabase.rpc('get_random_chat_stats');
+    if (error) throw error;
+    return data;
   }
 
   // S'abonner aux messages d'une session
   subscribeToMessages(sessionId: string, callback: (message: RandomChatMessage) => void) {
-    socketManager.onNewMessage((message) => {
-      if (message.session_id === sessionId) {
-        callback(message);
-      }
-    });
-    return { unsubscribe: () => socketManager.disconnect() };
+    return supabase
+      .channel(`random_chat_messages_${sessionId}`)
+      .on('postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'random_chat_messages', filter: `session_id=eq.${sessionId}` },
+        (payload) => {
+          callback(payload.new as RandomChatMessage);
+        }
+      )
+      .subscribe();
   }
 
   // S'abonner aux changements de session
   subscribeToSession(sessionId: string, callback: (session: RandomChatSession) => void) {
-    socketManager.onSessionEnded((data) => {
-      if (data.sessionId === sessionId) {
-        callback(data.session);
-      }
-    });
-    return { unsubscribe: () => socketManager.disconnect() };
+    return supabase
+      .channel(`random_chat_session_${sessionId}`)
+      .on('postgres_changes',
+        { event: 'UPDATE', schema: 'public', table: 'random_chat_sessions', filter: `id=eq.${sessionId}` },
+        (payload) => {
+          callback(payload.new as RandomChatSession);
+        }
+      )
+      .subscribe();
   }
 
   // Démarrer le heartbeat
@@ -155,10 +194,13 @@ class RandomChatService {
       clearInterval(this.heartbeatInterval);
     }
 
-    this.heartbeatInterval = setInterval(() => {
+    this.heartbeatInterval = setInterval(async () => {
       if (this.currentUserId) {
         try {
-          socketManager.heartbeat(this.currentUserId);
+          await supabase
+            .from('random_chat_users')
+            .update({ last_seen: new Date().toISOString() })
+            .eq('user_id', this.currentUserId);
         } catch (error) {
           console.error('Erreur heartbeat:', error);
         }
@@ -174,7 +216,15 @@ class RandomChatService {
     }
 
     if (this.currentUserId) {
-      socketManager.disconnect();
+      try {
+        await supabase
+          .from('random_chat_users')
+          .delete()
+          .eq('user_id', this.currentUserId);
+      } catch (error) {
+        console.error('Erreur cleanup:', error);
+      }
+
       this.currentUserId = null;
     }
   }

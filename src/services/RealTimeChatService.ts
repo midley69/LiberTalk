@@ -1,4 +1,4 @@
-import { api, socketManager } from '../lib/localApi';
+import { supabase } from '../lib/supabase';
 
 export interface ChatUser {
   user_id: string;
@@ -62,32 +62,59 @@ class RealTimeChatService {
     try {
       console.log('🔍 Recherche de correspondance avec vrais utilisateurs...', { userId, pseudo, genre, chatType, location });
 
-      const partners = await api.findPartner(userId, location);
+      const { error: userError } = await supabase
+        .from('online_users')
+        .upsert({
+          user_id: userId,
+          status: 'chat',
+          location,
+          last_seen: new Date().toISOString()
+        });
 
-      if (!partners) {
+      if (userError) {
+        console.error('❌ Erreur création utilisateur online:', userError);
+      }
+
+      const { data: partners, error } = await supabase.rpc('find_random_chat_partner', {
+        requesting_user_id: userId,
+        p_location_filter: location
+      });
+
+      if (error) {
+        console.error('❌ Erreur recherche partenaire:', error);
+        throw error;
+      }
+
+      if (!partners || partners.length === 0) {
         console.log('❌ Aucun vrai partenaire disponible');
         return null;
       }
 
-      console.log('✅ VRAI partenaire trouvé:', partners);
+      const partner = partners[0];
+      console.log('✅ VRAI partenaire trouvé:', partner);
 
-      const sessionData = await api.createSession({
+      const { data: sessionData, error: sessionError } = await supabase.rpc('create_random_chat_session', {
         user1_id: userId,
         user1_pseudo: pseudo,
         user1_genre: genre,
-        user2_id: partners.partner_user_id,
-        user2_pseudo: partners.partner_pseudo,
-        user2_genre: partners.partner_genre
+        user2_id: partner.partner_user_id,
+        user2_pseudo: partner.partner_pseudo,
+        user2_genre: partner.partner_genre
       });
 
+      if (sessionError) {
+        console.error('❌ Erreur création session:', sessionError);
+        throw sessionError;
+      }
+
       const realMatch: ChatMatch = {
-        id: sessionData.sessionId,
+        id: sessionData,
         user1_id: userId,
         user1_pseudo: pseudo,
         user1_genre: genre,
-        user2_id: partners.partner_user_id,
-        user2_pseudo: partners.partner_pseudo,
-        user2_genre: partners.partner_genre,
+        user2_id: partner.partner_user_id,
+        user2_pseudo: partner.partner_pseudo,
+        user2_genre: partner.partner_genre,
         match_type: chatType,
         status: 'active',
         started_at: new Date().toISOString(),
@@ -96,7 +123,7 @@ class RealTimeChatService {
       };
 
       this.currentUserId = userId;
-      this.currentMatchId = sessionData.sessionId;
+      this.currentMatchId = sessionData;
       this.startHeartbeat();
 
       console.log('✅ Correspondance RÉELLE créée:', realMatch);
@@ -119,16 +146,25 @@ class RealTimeChatService {
     try {
       console.log('📤 Envoi de message...', { matchId, senderId, messageText });
 
-      socketManager.sendMessage({
-        sessionId: matchId,
-        senderId,
-        senderPseudo,
-        senderGenre,
-        messageText
-      });
+      const { data, error } = await supabase
+        .from('random_chat_messages')
+        .insert({
+          session_id: matchId,
+          sender_id: senderId,
+          sender_pseudo: senderPseudo,
+          sender_genre: senderGenre,
+          message_text: messageText
+        })
+        .select()
+        .maybeSingle();
 
-      console.log('✅ Message envoyé');
-      return null;
+      if (error) {
+        console.error('❌ Erreur lors de l\'envoi du message:', error);
+        throw error;
+      }
+
+      console.log('✅ Message envoyé avec ID:', data?.id);
+      return data?.id || null;
     } catch (error) {
       console.error('❌ Erreur dans sendMessage:', error);
       throw error;
@@ -149,9 +185,18 @@ class RealTimeChatService {
     try {
       console.log('📥 Chargement des messages pour:', matchId);
 
-      const data = await api.loadMessages(matchId);
+      const { data, error } = await supabase
+        .from('random_chat_messages')
+        .select('*')
+        .eq('session_id', matchId)
+        .order('sent_at', { ascending: true });
 
-      const messages: ChatMessage[] = (data || []).map((msg: any) => ({
+      if (error) {
+        console.error('❌ Erreur chargement messages:', error);
+        throw error;
+      }
+
+      const messages: ChatMessage[] = (data || []).map(msg => ({
         id: msg.id,
         match_id: matchId,
         sender_id: msg.sender_id,
@@ -176,30 +221,35 @@ class RealTimeChatService {
     console.log('📡 Abonnement aux messages pour:', matchId);
 
     if (this.messageSubscription) {
-      this.messageSubscription = null;
+      this.messageSubscription.unsubscribe?.();
     }
 
-    socketManager.onNewMessage((newMessage: any) => {
-      if (newMessage.session_id === matchId) {
-        console.log('📨 Nouveau message reçu:', newMessage);
+    this.messageSubscription = supabase
+      .channel(`random_chat_messages_${matchId}`)
+      .on('postgres_changes',
+        { event: 'INSERT', schema: 'public', table: 'random_chat_messages', filter: `session_id=eq.${matchId}` },
+        (payload) => {
+          console.log('📨 Nouveau message reçu:', payload.new);
+          const newMessage = payload.new as any;
 
-        const chatMessage: ChatMessage = {
-          id: newMessage.id,
-          match_id: matchId,
-          sender_id: newMessage.sender_id,
-          sender_pseudo: newMessage.sender_pseudo,
-          sender_genre: newMessage.sender_genre,
-          message_text: newMessage.message_text,
-          message_type: newMessage.message_type,
-          color_code: newMessage.color_code,
-          sent_at: newMessage.sent_at
-        };
+          const chatMessage: ChatMessage = {
+            id: newMessage.id,
+            match_id: matchId,
+            sender_id: newMessage.sender_id,
+            sender_pseudo: newMessage.sender_pseudo,
+            sender_genre: newMessage.sender_genre,
+            message_text: newMessage.message_text,
+            message_type: newMessage.message_type,
+            color_code: newMessage.color_code,
+            sent_at: newMessage.sent_at
+          };
 
-        callback(chatMessage);
-      }
-    });
-
-    this.messageSubscription = { unsubscribe: () => socketManager.disconnect() };
+          callback(chatMessage);
+        }
+      )
+      .subscribe((status) => {
+        console.log('📡 Statut abonnement messages:', status);
+      });
 
     console.log('✅ Abonnement aux messages actif pour:', matchId);
     return this.messageSubscription;
@@ -210,10 +260,19 @@ class RealTimeChatService {
     try {
       console.log('🔚 Fin de correspondance...', { matchId, userId, reason });
 
-      await api.endSession(matchId, userId, reason);
+      const { data, error } = await supabase.rpc('end_random_chat_session', {
+        session_id: matchId,
+        ended_by_user_id: userId,
+        end_reason: reason
+      });
+
+      if (error) {
+        console.error('❌ Erreur fin de session:', error);
+        throw error;
+      }
 
       if (this.messageSubscription) {
-        this.messageSubscription = null;
+        this.messageSubscription.unsubscribe();
       }
 
       console.log('✅ Correspondance terminée');
@@ -228,7 +287,12 @@ class RealTimeChatService {
   // Obtenir les statistiques en temps réel
   async getStats(): Promise<any> {
     try {
-      const randomChatStats = await api.getStats();
+      const { data: randomChatStats, error } = await supabase.rpc('get_random_chat_stats');
+
+      if (error) {
+        console.error('❌ Erreur lors de la récupération des stats:', error);
+        throw error;
+      }
 
       console.log('📊 Statistiques réelles récupérées:', randomChatStats);
       return {
@@ -255,10 +319,14 @@ class RealTimeChatService {
       clearInterval(this.heartbeatInterval);
     }
 
-    this.heartbeatInterval = setInterval(() => {
+    this.heartbeatInterval = setInterval(async () => {
       if (this.currentUserId) {
         try {
-          socketManager.heartbeat(this.currentUserId);
+          await supabase
+            .from('online_users')
+            .update({ last_seen: new Date().toISOString() })
+            .eq('user_id', this.currentUserId);
+
           console.log('💓 Heartbeat pour utilisateur:', this.currentUserId);
         } catch (error) {
           console.error('❌ Erreur heartbeat:', error);
@@ -277,12 +345,21 @@ class RealTimeChatService {
     }
 
     if (this.messageSubscription) {
+      this.messageSubscription.unsubscribe();
       this.messageSubscription = null;
     }
 
     if (this.currentUserId) {
-      socketManager.disconnect();
-      console.log('✅ Présence utilisateur nettoyée');
+      supabase
+        .from('online_users')
+        .delete()
+        .eq('user_id', this.currentUserId)
+        .then(() => {
+          console.log('✅ Présence utilisateur nettoyée');
+        })
+        .catch((error) => {
+          console.error('❌ Erreur nettoyage présence:', error);
+        });
     }
 
     this.currentUserId = null;
