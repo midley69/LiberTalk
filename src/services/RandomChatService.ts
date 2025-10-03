@@ -1,4 +1,5 @@
 import { supabase } from '../lib/supabase';
+import PresenceService, { PresenceUser } from './PresenceService';
 
 export interface RandomChatUser {
   user_id: string;
@@ -47,12 +48,59 @@ class RandomChatService {
   private static instance: RandomChatService;
   private currentUserId: string | null = null;
   private heartbeatInterval: NodeJS.Timeout | null = null;
+  private presenceService = PresenceService.getInstance();
 
   static getInstance(): RandomChatService {
     if (!RandomChatService.instance) {
       RandomChatService.instance = new RandomChatService();
     }
     return RandomChatService.instance;
+  }
+
+  async joinQueueWithPresence(
+    userId: string,
+    pseudo: string,
+    genre: 'homme' | 'femme' | 'autre',
+    autoswitchEnabled: boolean = false,
+    onPresenceChange: (users: PresenceUser[]) => void,
+    onMatchFound: (sessionId: string, partnerId: string, partnerPseudo: string, partnerGenre: string) => void
+  ): Promise<boolean> {
+    console.log('🎯 Joining queue with REAL-TIME presence...', { userId, pseudo, genre });
+
+    // Join database queue
+    const { error } = await supabase.rpc('join_waiting_queue', {
+      p_user_id: userId,
+      p_pseudo: pseudo,
+      p_genre: genre,
+      p_autoswitch_enabled: autoswitchEnabled,
+      p_preferred_gender: 'tous'
+    });
+
+    if (error) {
+      console.error('❌ Error joining queue:', error);
+      throw error;
+    }
+
+    this.currentUserId = userId;
+    this.startHeartbeat();
+
+    // Join presence channel for INSTANT matching
+    await this.presenceService.joinWaitingRoom(
+      userId,
+      pseudo,
+      genre,
+      onPresenceChange,
+      async (partnerId, partnerPseudo, partnerGenre) => {
+        // Match found via presence! Get the session ID
+        const session = await this.getUserActiveSession(userId);
+        if (session) {
+          onMatchFound(session.session_id, partnerId, partnerPseudo, partnerGenre);
+        }
+      }
+    );
+
+    console.log('✅ Successfully joined queue with presence');
+    return true;
   }
 
   async joinQueue(
@@ -276,6 +324,9 @@ class RandomChatService {
 
   async cleanup(): Promise<void> {
     console.log('🧹 Cleaning up...');
+
+    // Leave presence channel
+    await this.presenceService.leaveWaitingRoom();
 
     if (this.heartbeatInterval) {
       clearInterval(this.heartbeatInterval);
