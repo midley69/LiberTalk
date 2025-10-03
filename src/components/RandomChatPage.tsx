@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Send, Users, ArrowLeft, SkipForward, UserPlus, X, MessageCircle, Clock, Settings, Wifi, WifiOff } from 'lucide-react';
 import { useApp } from '../context/AppContext';
+import { supabase } from '../lib/supabase';
 import CookieManager from '../utils/cookieManager';
 import RandomChatService from '../services/RandomChatService';
 
