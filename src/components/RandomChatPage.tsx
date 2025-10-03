@@ -1,10 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Send, Users, ArrowLeft, SkipForward, UserPlus, X, MessageCircle, Clock, Settings, Wifi, WifiOff } from 'lucide-react';
 import { useApp } from '../context/AppContext';
-import { supabase } from '../lib/supabase';
 import CookieManager from '../utils/cookieManager';
-import DisconnectionManager from '../services/DisconnectionManager';
-import AutoswitchManager from '../services/AutoswitchManager';
+import RandomChatService from '../services/RandomChatService';
 
 interface RandomChatUser {
   user_id: string;
@@ -67,13 +65,10 @@ export function RandomChatPage() {
   const [lastActivity, setLastActivity] = useState<Date>(new Date());
   
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const searchTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const searchIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const messageSubscriptionRef = useRef<any>(null);
   const sessionSubscriptionRef = useRef<any>(null);
-  
-  // Gestionnaires de services
-  const disconnectionManager = DisconnectionManager.getInstance();
-  const autoswitchManager = AutoswitchManager.getInstance();
+  const chatService = RandomChatService.getInstance();
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -150,7 +145,7 @@ export function RandomChatPage() {
     try {
       console.log('🔄 Démarrage du chat randomisé...', { finalPseudo, finalGenre, finalAutoswitch });
       setConnectionStatus('connecting');
-      
+
       // Sauvegarder les préférences
       CookieManager.savePreferences({
         pseudo: finalPseudo,
@@ -159,50 +154,30 @@ export function RandomChatPage() {
         lastUsed: new Date().toISOString()
       });
 
-      // Créer l'utilisateur
+      // Créer l'utilisateur et rejoindre la file d'attente
       const userId = `random_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
-      
-      const { data: userData, error: userError } = await supabase
-        .from('random_chat_users')
-        .upsert({
-          user_id: userId,
-          pseudo: finalPseudo.trim(),
-          genre: finalGenre,
-          status: 'en_attente',
-          autoswitch_enabled: finalAutoswitch,
-          preferred_gender: preferredGender,
-          last_seen: new Date().toISOString()
-        })
-        .select()
-        .maybeSingle();
 
-      if (userError) {
-        console.error('❌ Erreur création utilisateur:', userError);
-        throw userError;
-      }
+      await chatService.joinQueue(userId, finalPseudo.trim(), finalGenre, finalAutoswitch);
 
-      console.log('✅ Utilisateur créé:', userData);
-      
-      setCurrentUser(userData);
+      const user: RandomChatUser = {
+        user_id: userId,
+        pseudo: finalPseudo.trim(),
+        genre: finalGenre,
+        status: 'en_attente',
+        autoswitch_enabled: finalAutoswitch,
+        preferred_gender: preferredGender,
+        last_seen: new Date().toISOString()
+      };
+
+      setCurrentUser(user);
       setShowSetup(false);
       setCurrentView('waiting');
       setConnectionStatus('connected');
       setLastActivity(new Date());
-      
-      // Initialiser la gestion des déconnexions
-      disconnectionManager.initialize(userId);
-      
-      // Initialiser l'autoswitch si activé
-      if (finalAutoswitch) {
-        autoswitchManager.initialize(
-          (seconds) => setAutoswitchCountdown(seconds),
-          (newSessionId) => handleAutoswitchComplete(newSessionId)
-        );
-      }
-      
+
       // Chercher un partenaire
-      searchForPartner(userId);
-      
+      searchForPartner(userId, finalPseudo, finalGenre);
+
     } catch (error) {
       console.error('❌ Erreur démarrage chat:', error);
       setConnectionStatus('disconnected');
@@ -210,109 +185,78 @@ export function RandomChatPage() {
     }
   };
 
-  // Chercher un partenaire (VRAIS UTILISATEURS UNIQUEMENT)
-  const searchForPartner = async (userId: string) => {
+  // Chercher un partenaire (SIMPLE - UNE FONCTION FAIT TOUT)
+  const searchForPartner = async (userId: string, userPseudo: string, userGenre: 'homme' | 'femme' | 'autre') => {
     setIsSearching(true);
     setSearchAttempts(0);
 
-    const maxAttempts = 15; // AUGMENTÉ: Plus d'essais pour gérer les race conditions
     let attempts = 0;
+    const maxAttempts = 20;
 
     const search = async () => {
       attempts++;
       setSearchAttempts(attempts);
 
       try {
-        console.log(`🔍 Recherche partenaire RÉEL - Tentative ${attempts}/${maxAttempts}`);
-        
-        // Chercher un partenaire via la fonction SQL (VRAIS UTILISATEURS UNIQUEMENT) - Premier disponible
-        const { data: partners, error } = await supabase.rpc('find_random_chat_partner', {
-          requesting_user_id: userId,
-          p_location_filter: null // Temporairement désactivé - trouve le premier disponible
-        });
+        console.log(`\ud83d\udd0d Recherche partenaire - Tentative ${attempts}/${maxAttempts}`);
 
-        if (error) {
-          console.error('❌ Erreur recherche partenaire:', error);
-          throw error;
-        }
+        // NOUVELLE FONCTION ATOMIQUE - Trouve ET cr\u00e9e la session en UNE SEULE op\u00e9ration!
+        const match = await chatService.findMatch(userId, userPseudo, userGenre);
 
-        if (partners && partners.length > 0) {
-          const partner = partners[0];
-          console.log('✅ VRAI partenaire trouvé:', partner);
+        if (match && match.is_success) {
+          console.log('\u2705 Match trouv\u00e9 ET session cr\u00e9\u00e9e!', match);
 
-          // Créer une session de chat
-          const { data: sessionData, error: sessionError } = await supabase.rpc('create_random_chat_session', {
+          // Cr\u00e9er l'objet session pour l'UI
+          const session: RandomChatSession = {
+            id: match.session_id,
             user1_id: userId,
-            user1_pseudo: currentUser?.pseudo || pseudo,
-            user1_genre: currentUser?.genre || genre,
-            user2_id: partner.partner_user_id,
-            user2_pseudo: partner.partner_pseudo,
-            user2_genre: partner.partner_genre
-          });
-
-          if (sessionError) {
-            console.error('❌ Erreur création session (race condition):', sessionError);
-            console.log('🔄 Le partenaire a été pris par quelqu\'un d\'autre, nouvelle tentative...');
-
-            // NE PAS throw! Continuer à chercher
-            if (attempts < maxAttempts) {
-              searchTimeoutRef.current = setTimeout(search, 2000); // Retry rapidement
-            } else {
-              setIsSearching(false);
-              alert('Impossible de créer une connexion. Trop d\'utilisateurs en recherche simultanée. Veuillez réessayer dans quelques secondes.');
-            }
-            return;
-          }
-
-          console.log('✅ Session créée avec VRAI utilisateur:', sessionData);
-
-          // Charger la session créée
-          const { data: session, error: loadError } = await supabase
-            .from('random_chat_sessions')
-            .select('*')
-            .eq('id', sessionData)
-            .maybeSingle();
-
-          if (loadError) {
-            console.error('❌ Erreur chargement session:', loadError);
-            throw loadError;
-          }
+            user1_pseudo: userPseudo,
+            user1_genre: userGenre,
+            user2_id: match.partner_id,
+            user2_pseudo: match.partner_pseudo,
+            user2_genre: match.partner_genre,
+            status: 'active',
+            started_at: new Date().toISOString(),
+            last_activity: new Date().toISOString(),
+            message_count: 0
+          };
 
           setCurrentSession(session);
           setCurrentView('chatting');
           setIsSearching(false);
           setLastActivity(new Date());
-          
+
           // Charger les messages existants
-          await loadMessages(sessionData);
-          
-          // Configurer l'autoswitch pour cette session
-          if (currentUser?.autoswitch_enabled) {
-            autoswitchManager.startMonitoringSession(sessionData);
-          }
-          
+          await loadMessages(match.session_id);
+
           // S'abonner aux nouveaux messages et changements de session
-          subscribeToMessages(sessionData);
-          subscribeToSession(sessionData);
-          
+          subscribeToMessages(match.session_id);
+          subscribeToSession(match.session_id);
+
+          // Arr\u00eater l'interval de recherche
+          if (searchIntervalRef.current) {
+            clearInterval(searchIntervalRef.current);
+            searchIntervalRef.current = null;
+          }
+
           return;
         }
 
-        // Aucun partenaire trouvé
-        console.log(`❌ Aucun VRAI partenaire trouvé - Tentative ${attempts}/${maxAttempts}`);
-        
+        // Aucun partenaire trouv\u00e9 - Continuer la recherche
+        console.log(`\u274c Aucun partenaire disponible - Tentative ${attempts}/${maxAttempts}`);
+
         if (attempts < maxAttempts) {
-          console.log('⏳ Attente avant nouvelle tentative...');
-          searchTimeoutRef.current = setTimeout(search, 2000 + Math.random() * 1000); // RÉDUIT: 2-3 secondes
+          console.log('\u23f3 Nouvelle tentative dans 2 secondes...');
+          searchIntervalRef.current = setTimeout(search, 2000);
         } else {
           setIsSearching(false);
-          alert(`Aucun utilisateur réel disponible pour le moment.\n\nConseil: Essayez entre 18h et 23h quand il y a plus d'utilisateurs connectés.`);
+          alert(`Aucun utilisateur disponible pour le moment.\\n\\nConseil: Essayez plus tard quand il y a plus d'utilisateurs en ligne.`);
         }
 
       } catch (error) {
-        console.error('❌ Erreur recherche partenaire:', error);
+        console.error('\u274c Erreur recherche partenaire:', error);
         setIsSearching(false);
-        alert('Erreur lors de la recherche. Veuillez réessayer.');
+        alert('Erreur lors de la recherche. Veuillez r\u00e9essayer.');
       }
     };
 
@@ -322,21 +266,8 @@ export function RandomChatPage() {
   // Charger les messages
   const loadMessages = async (sessionId: string) => {
     try {
-      console.log('🔄 Chargement des messages pour session:', sessionId);
-      
-      const { data, error } = await supabase
-        .from('random_chat_messages')
-        .select('*')
-        .eq('session_id', sessionId)
-        .order('sent_at', { ascending: true });
-
-      if (error) {
-        console.error('❌ Erreur chargement messages:', error);
-        throw error;
-      }
-      
-      console.log('✅ Messages chargés:', data?.length || 0);
-      setMessages(data || []);
+      const msgs = await chatService.loadMessages(sessionId);
+      setMessages(msgs);
       setLastActivity(new Date());
     } catch (error) {
       console.error('❌ Erreur chargement messages:', error);
@@ -345,35 +276,16 @@ export function RandomChatPage() {
 
   // S'abonner aux nouveaux messages
   const subscribeToMessages = (sessionId: string) => {
-    console.log('📡 Abonnement aux messages pour session:', sessionId);
-    
-    // Nettoyer l'ancien abonnement
     if (messageSubscriptionRef.current) {
       messageSubscriptionRef.current.unsubscribe();
     }
-    
-    messageSubscriptionRef.current = supabase
-      .channel(`random_chat_messages_${sessionId}`)
-      .on('postgres_changes', 
-        { event: 'INSERT', schema: 'public', table: 'random_chat_messages', filter: `session_id=eq.${sessionId}` },
-        (payload) => {
-          console.log('📨 Nouveau message reçu:', payload.new);
-          const newMessage = payload.new as RandomChatMessage;
-          setMessages(prev => [...prev, newMessage]);
-          setLastActivity(new Date());
-        }
-      )
-      .subscribe((status) => {
-        console.log('📡 Statut abonnement messages:', status);
-        
-        if (status === 'SUBSCRIBED') {
-          console.log('✅ Abonnement aux messages actif');
-          setConnectionStatus('connected');
-        } else if (status === 'CHANNEL_ERROR') {
-          console.error('❌ Erreur abonnement messages');
-          setConnectionStatus('disconnected');
-        }
-      });
+
+    messageSubscriptionRef.current = chatService.subscribeToMessages(sessionId, (newMessage) => {
+      setMessages(prev => [...prev, newMessage]);
+      setLastActivity(new Date());
+    });
+
+    setConnectionStatus('connected');
   };
 
   // S'abonner aux changements de session

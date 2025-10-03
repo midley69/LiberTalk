@@ -21,8 +21,6 @@ export interface RandomChatSession {
   started_at: string;
   last_activity: string;
   message_count: number;
-  autoswitch_countdown_start?: string;
-  autoswitch_user_id?: string;
 }
 
 export interface RandomChatMessage {
@@ -37,6 +35,14 @@ export interface RandomChatMessage {
   color_code: string;
 }
 
+export interface MatchResult {
+  session_id: string;
+  partner_id: string;
+  partner_pseudo: string;
+  partner_genre: string;
+  is_success: boolean;
+}
+
 class RandomChatService {
   private static instance: RandomChatService;
   private currentUserId: string | null = null;
@@ -49,69 +55,76 @@ class RandomChatService {
     return RandomChatService.instance;
   }
 
-  // Créer ou mettre à jour un utilisateur
-  async createUser(pseudo: string, genre: 'homme' | 'femme' | 'autre', autoswitchEnabled: boolean): Promise<RandomChatUser> {
-    const userId = `random_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
+  async joinQueue(
+    userId: string,
+    pseudo: string,
+    genre: 'homme' | 'femme' | 'autre',
+    autoswitchEnabled: boolean = false
+  ): Promise<boolean> {
+    console.log('🎯 Joining waiting queue...', { userId, pseudo, genre });
 
-    const { data, error } = await supabase
-      .from('random_chat_users')
-      .upsert({
-        user_id: userId,
-        pseudo: pseudo.trim(),
-        genre,
-        status: 'en_attente',
-        autoswitch_enabled: autoswitchEnabled,
-        last_seen: new Date().toISOString()
-      })
-      .select()
-      .maybeSingle();
+    const { data, error } = await supabase.rpc('join_waiting_queue', {
+      p_user_id: userId,
+      p_pseudo: pseudo,
+      p_genre: genre,
+      p_autoswitch_enabled: autoswitchEnabled,
+      p_preferred_gender: 'tous'
+    });
 
-    if (error) throw error;
+    if (error) {
+      console.error('❌ Error joining queue:', error);
+      throw error;
+    }
 
     this.currentUserId = userId;
     this.startHeartbeat();
 
-    return data;
+    console.log('✅ Successfully joined queue');
+    return true;
   }
 
-  // Chercher un partenaire
-  async findPartner(userId: string, locationFilter?: string): Promise<RandomChatUser | null> {
-    const { data, error } = await supabase.rpc('find_random_chat_partner', {
-      requesting_user_id: userId,
-      p_location_filter: locationFilter
+  async findMatch(
+    userId: string,
+    pseudo: string,
+    genre: 'homme' | 'femme' | 'autre',
+    locationFilter?: string
+  ): Promise<MatchResult | null> {
+    console.log('🔍 Looking for match...', { userId, pseudo, genre, locationFilter });
+
+    const { data, error } = await supabase.rpc('find_and_create_match', {
+      p_user_id: userId,
+      p_pseudo: pseudo,
+      p_genre: genre,
+      p_location_filter: locationFilter || null
     });
 
-    if (error) throw error;
+    if (error) {
+      console.error('❌ Error finding match:', error);
+      throw error;
+    }
 
-    return data && data.length > 0 ? {
-      user_id: data[0].partner_user_id,
-      pseudo: data[0].partner_pseudo,
-      genre: data[0].partner_genre,
-      status: 'en_attente',
-      autoswitch_enabled: false,
-      last_seen: new Date().toISOString()
-    } : null;
+    if (!data || data.length === 0) {
+      console.log('❌ No data returned from match');
+      return null;
+    }
+
+    const match = data[0];
+
+    if (!match.is_success || !match.session_id) {
+      console.log('❌ No match found');
+      return null;
+    }
+
+    console.log('✅ Match found!', match);
+    return {
+      session_id: match.session_id,
+      partner_id: match.partner_id,
+      partner_pseudo: match.partner_pseudo,
+      partner_genre: match.partner_genre,
+      is_success: match.is_success
+    };
   }
 
-  // Créer une session de chat
-  async createSession(
-    user1: RandomChatUser,
-    user2: RandomChatUser
-  ): Promise<string> {
-    const { data, error } = await supabase.rpc('create_random_chat_session', {
-      user1_id: user1.user_id,
-      user1_pseudo: user1.pseudo,
-      user1_genre: user1.genre,
-      user2_id: user2.user_id,
-      user2_pseudo: user2.pseudo,
-      user2_genre: user2.genre
-    });
-
-    if (error) throw error;
-    return data;
-  }
-
-  // Envoyer un message
   async sendMessage(
     sessionId: string,
     senderId: string,
@@ -119,6 +132,8 @@ class RandomChatService {
     senderGenre: string,
     messageText: string
   ): Promise<void> {
+    console.log('📤 Sending message...', { sessionId, senderId, messageText });
+
     const { error } = await supabase
       .from('random_chat_messages')
       .insert({
@@ -129,66 +144,115 @@ class RandomChatService {
         message_text: messageText.trim()
       });
 
-    if (error) throw error;
+    if (error) {
+      console.error('❌ Error sending message:', error);
+      throw error;
+    }
+
+    console.log('✅ Message sent');
   }
 
-  // Charger les messages d'une session
   async loadMessages(sessionId: string): Promise<RandomChatMessage[]> {
+    console.log('📥 Loading messages for session:', sessionId);
+
     const { data, error } = await supabase
       .from('random_chat_messages')
       .select('*')
       .eq('session_id', sessionId)
       .order('sent_at', { ascending: true });
 
-    if (error) throw error;
+    if (error) {
+      console.error('❌ Error loading messages:', error);
+      throw error;
+    }
+
+    console.log('✅ Messages loaded:', data?.length || 0);
     return data || [];
   }
 
-  // Terminer une session
   async endSession(sessionId: string, endedByUserId: string, endReason: string): Promise<void> {
-    const { error } = await supabase.rpc('end_random_chat_session', {
-      session_id: sessionId,
-      ended_by_user_id: endedByUserId,
-      end_reason: endReason
+    console.log('🔚 Ending session...', { sessionId, endedByUserId, endReason });
+
+    const { error } = await supabase.rpc('end_chat_session', {
+      p_session_id: sessionId,
+      p_ended_by_user_id: endedByUserId,
+      p_end_reason: endReason
     });
 
-    if (error) throw error;
+    if (error) {
+      console.error('❌ Error ending session:', error);
+      throw error;
+    }
+
+    console.log('✅ Session ended');
   }
 
-  // Obtenir les statistiques
-  async getStats(): Promise<any> {
-    const { data, error } = await supabase.rpc('get_random_chat_stats');
-    if (error) throw error;
-    return data;
+  async getUserActiveSession(userId: string): Promise<{
+    session_id: string;
+    partner_id: string;
+    partner_pseudo: string;
+    partner_genre: string;
+  } | null> {
+    const { data, error } = await supabase.rpc('get_user_active_session', {
+      p_user_id: userId
+    });
+
+    if (error) {
+      console.error('❌ Error getting active session:', error);
+      return null;
+    }
+
+    if (!data || data.length === 0) {
+      return null;
+    }
+
+    return data[0];
   }
 
-  // S'abonner aux messages d'une session
   subscribeToMessages(sessionId: string, callback: (message: RandomChatMessage) => void) {
+    console.log('🔔 Subscribing to messages for session:', sessionId);
+
     return supabase
       .channel(`random_chat_messages_${sessionId}`)
       .on('postgres_changes',
-        { event: 'INSERT', schema: 'public', table: 'random_chat_messages', filter: `session_id=eq.${sessionId}` },
+        {
+          event: 'INSERT',
+          schema: 'public',
+          table: 'random_chat_messages',
+          filter: `session_id=eq.${sessionId}`
+        },
         (payload) => {
+          console.log('📨 New message received:', payload.new);
           callback(payload.new as RandomChatMessage);
         }
       )
-      .subscribe();
+      .subscribe((status) => {
+        console.log('📡 Subscription status:', status);
+      });
   }
 
-  // S'abonner aux changements de session
-  subscribeToSession(sessionId: string, callback: (session: RandomChatSession) => void) {
+  subscribeToSession(sessionId: string, callback: (session: any) => void) {
+    console.log('🔔 Subscribing to session updates:', sessionId);
+
     return supabase
       .channel(`random_chat_session_${sessionId}`)
       .on('postgres_changes',
-        { event: 'UPDATE', schema: 'public', table: 'random_chat_sessions', filter: `id=eq.${sessionId}` },
+        {
+          event: 'UPDATE',
+          schema: 'public',
+          table: 'random_chat_sessions',
+          filter: `id=eq.${sessionId}`
+        },
         (payload) => {
-          callback(payload.new as RandomChatSession);
+          console.log('📨 Session updated:', payload.new);
+          callback(payload.new);
         }
       )
-      .subscribe();
+      .subscribe((status) => {
+        console.log('📡 Session subscription status:', status);
+      });
   }
 
-  // Démarrer le heartbeat
   private startHeartbeat(): void {
     if (this.heartbeatInterval) {
       clearInterval(this.heartbeatInterval);
@@ -201,15 +265,18 @@ class RandomChatService {
             .from('random_chat_users')
             .update({ last_seen: new Date().toISOString() })
             .eq('user_id', this.currentUserId);
+
+          console.log('💓 Heartbeat sent');
         } catch (error) {
-          console.error('Erreur heartbeat:', error);
+          console.error('❌ Heartbeat error:', error);
         }
       }
     }, 30000);
   }
 
-  // Nettoyer
   async cleanup(): Promise<void> {
+    console.log('🧹 Cleaning up...');
+
     if (this.heartbeatInterval) {
       clearInterval(this.heartbeatInterval);
       this.heartbeatInterval = null;
@@ -221,8 +288,10 @@ class RandomChatService {
           .from('random_chat_users')
           .delete()
           .eq('user_id', this.currentUserId);
+
+        console.log('✅ User removed from queue');
       } catch (error) {
-        console.error('Erreur cleanup:', error);
+        console.error('❌ Cleanup error:', error);
       }
 
       this.currentUserId = null;
