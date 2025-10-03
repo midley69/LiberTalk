@@ -50,7 +50,7 @@ export default function VideoCallPage() {
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-purple-900 via-blue-900 to-indigo-900 flex flex-col">
+    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 flex flex-col">
       {/* Header */}
       <div className="p-4 bg-black/20 backdrop-blur-sm">
         <h1 className="text-2xl font-bold text-white text-center">Appel Vidéo</h1>

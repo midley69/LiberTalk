@@ -21,7 +21,6 @@ export function ChatPage() {
   const [searchAttempts, setSearchAttempts] = useState(0);
   const [currentUserId, setCurrentUserId] = useState<string>('');
   const [connectedUser, setConnectedUser] = useState<any>(null);
-  const [waitingCounts, setWaitingCounts] = useState({ chat: 0, video: 0, group: 0 });
   const messagesEndRef = useRef<HTMLDivElement>(null);
   
   const supabaseService = SupabaseService.getInstance();
@@ -47,36 +46,6 @@ export function ChatPage() {
     }
   }, []);
 
-  // Charger les statistiques en temps réel toutes les 30 secondes
-  useEffect(() => {
-    const loadWaitingCounts = async () => {
-      try {
-        console.log('🔄 Mise à jour des statistiques de chat...');
-        
-        // Obtenir les vrais utilisateurs en attente pour le chat randomisé
-        const randomChatCount = await supabaseService.getRealRandomChatUsers();
-        const videoCount = await supabaseService.getUsersByStatus('video');
-        const groupCount = await supabaseService.getUsersByStatus('group');
-        
-        const newCounts = { chat: randomChatCount, video: videoCount, group: groupCount };
-        setWaitingCounts(newCounts);
-        
-        console.log('📊 Statistiques mises à jour:', newCounts);
-      } catch (error) {
-        console.error('❌ Erreur lors du chargement des statistiques:', error);
-        // En cas d'erreur, mettre des valeurs nulles pour indiquer qu'il n'y a pas de vrais utilisateurs
-        setWaitingCounts({ chat: 0, video: 0, group: 0 });
-      }
-    };
-
-    // Charger immédiatement
-    loadWaitingCounts();
-    
-    // Puis toutes les 15 secondes pour plus de réactivité
-    const interval = setInterval(loadWaitingCounts, 15000);
-
-    return () => clearInterval(interval);
-  }, []);
 
   useEffect(() => {
     let interval: NodeJS.Timeout;
@@ -416,7 +385,7 @@ export function ChatPage() {
               <div className="flex items-center space-x-2 text-cyan-400">
                 <Users className="w-4 h-4" />
                 <span className="text-sm">
-                  {isSearching ? `${waitingCounts.chat} en attente` : `${connectedUsers} connectés`}
+                  {isSearching ? 'Recherche...' : `${connectedUsers} connectés`}
                 </span>
               </div>
             )}
@@ -444,21 +413,6 @@ export function ChatPage() {
                 </p>
               </div>
 
-              {/* Stats en temps réel */}
-              <div className="stats-container">
-                <div className="text-center">
-                  <div className="text-cyan-400 font-bold text-base sm:text-lg live-indicator">{waitingCounts.chat}</div>
-                  <div className="text-gray-400 text-xs">Chat</div>
-                </div>
-                <div className="text-center">
-                  <div className="text-purple-400 font-bold text-base sm:text-lg live-indicator">{waitingCounts.video}</div>
-                  <div className="text-gray-400 text-xs">Vidéo</div>
-                </div>
-                <div className="text-center">
-                  <div className="text-green-400 font-bold text-base sm:text-lg live-indicator">{waitingCounts.group}</div>
-                  <div className="text-gray-400 text-xs">Groupes</div>
-                </div>
-              </div>
               <div className="text-center">
                 <p className="text-gray-400 text-xs">Utilisateurs en attente de connexion • Mis à jour toutes les 30s</p>
               </div>
@@ -479,9 +433,6 @@ export function ChatPage() {
                       <p className="text-gray-400 text-xs sm:text-sm">
                         Discutez avec quelqu'un de complètement nouveau
                       </p>
-                      <div className="mt-2 text-cyan-400 text-xs live-indicator">
-                        {waitingCounts.chat} utilisateurs en attente
-                      </div>
                     </div>
                   </div>
                 </button>
@@ -491,7 +442,7 @@ export function ChatPage() {
                   className="responsive-card rounded-xl border border-white/20 bg-white/5 hover:border-pink-400 hover:bg-pink-400/10 transition-all duration-300 group hover-glow"
                 >
                   <div className="text-center space-y-3 md:space-y-4">
-                    <div className="w-10 h-10 sm:w-12 sm:h-12 md:w-16 md:h-16 mx-auto bg-gradient-to-br from-pink-400 to-purple-500 rounded-full flex items-center justify-center group-hover:scale-110 transition-transform duration-300">
+                    <div className="w-10 h-10 sm:w-12 sm:h-12 md:w-16 md:h-16 mx-auto bg-gradient-to-br from-cyan-400 to-blue-500 rounded-full flex items-center justify-center group-hover:scale-110 transition-transform duration-300">
                       <Shuffle className="w-5 h-5 sm:w-6 sm:h-6 md:w-8 md:h-8 text-white" />
                     </div>
                     <div>
@@ -534,9 +485,9 @@ export function ChatPage() {
               </div>
 
               {/* Groups Quick Access */}
-              <div className="bg-gradient-to-r from-purple-500/10 to-pink-500/10 border border-purple-500/20 rounded-xl p-4 sm:p-6">
+              <div className="bg-gradient-to-r from-cyan-500/10 to-blue-500/10 border border-cyan-500/20 rounded-xl p-4 sm:p-6">
                 <h3 className="text-base sm:text-lg font-semibold text-white mb-3 flex items-center">
-                  <Users className="w-5 h-5 mr-2 text-purple-400" />
+                  <Users className="w-5 h-5 mr-2 text-cyan-400" />
                   Groupes de Discussion
                 </h3>
                 <p className="text-gray-300 text-xs sm:text-sm mb-4">
@@ -545,13 +496,10 @@ export function ChatPage() {
                 <div className="flex flex-col sm:flex-row items-center justify-between space-y-2 sm:space-y-0">
                   <button
                     onClick={() => setPage('groups')}
-                    className="w-full sm:w-auto mobile-button px-4 py-3 bg-gradient-to-r from-purple-500 to-pink-600 text-white rounded-lg hover:from-purple-400 hover:to-pink-500 transition-all duration-300 font-medium"
+                    className="w-full sm:w-auto mobile-button px-4 py-3 bg-gradient-to-r from-cyan-500 to-blue-600 text-white rounded-lg hover:from-cyan-400 hover:to-blue-500 transition-all duration-300 font-medium"
                   >
                     Voir tous les groupes
                   </button>
-                  <div className="text-purple-400 text-xs sm:text-sm live-indicator">
-                    {waitingCounts.group} groupes actifs
-                  </div>
                 </div>
               </div>
             </div>
@@ -568,9 +516,6 @@ export function ChatPage() {
               <p className="text-gray-400 text-sm">
                 Recherche de vrais utilisateurs disponibles...
               </p>
-              <div className="text-cyan-400 text-xs sm:text-sm live-indicator">
-                {waitingCounts.chat} vrais utilisateurs en attente
-              </div>
               {searchAttempts > 2 && (
                 <p className="text-yellow-400 text-xs sm:text-sm">
                   Peu de vrais utilisateurs disponibles actuellement
