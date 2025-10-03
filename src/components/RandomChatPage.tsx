@@ -215,7 +215,7 @@ export function RandomChatPage() {
     setIsSearching(true);
     setSearchAttempts(0);
 
-    const maxAttempts = 8; // Plus d'essais pour trouver de vrais utilisateurs
+    const maxAttempts = 15; // AUGMENTÉ: Plus d'essais pour gérer les race conditions
     let attempts = 0;
 
     const search = async () => {
@@ -239,7 +239,7 @@ export function RandomChatPage() {
         if (partners && partners.length > 0) {
           const partner = partners[0];
           console.log('✅ VRAI partenaire trouvé:', partner);
-          
+
           // Créer une session de chat
           const { data: sessionData, error: sessionError } = await supabase.rpc('create_random_chat_session', {
             user1_id: userId,
@@ -251,8 +251,17 @@ export function RandomChatPage() {
           });
 
           if (sessionError) {
-            console.error('❌ Erreur création session:', sessionError);
-            throw sessionError;
+            console.error('❌ Erreur création session (race condition):', sessionError);
+            console.log('🔄 Le partenaire a été pris par quelqu\'un d\'autre, nouvelle tentative...');
+
+            // NE PAS throw! Continuer à chercher
+            if (attempts < maxAttempts) {
+              searchTimeoutRef.current = setTimeout(search, 2000); // Retry rapidement
+            } else {
+              setIsSearching(false);
+              alert('Impossible de créer une connexion. Trop d\'utilisateurs en recherche simultanée. Veuillez réessayer dans quelques secondes.');
+            }
+            return;
           }
 
           console.log('✅ Session créée avec VRAI utilisateur:', sessionData);
@@ -294,7 +303,7 @@ export function RandomChatPage() {
         
         if (attempts < maxAttempts) {
           console.log('⏳ Attente avant nouvelle tentative...');
-          searchTimeoutRef.current = setTimeout(search, 4000 + Math.random() * 2000); // 4-6 secondes
+          searchTimeoutRef.current = setTimeout(search, 2000 + Math.random() * 1000); // RÉDUIT: 2-3 secondes
         } else {
           setIsSearching(false);
           alert(`Aucun utilisateur réel disponible pour le moment.\n\nConseil: Essayez entre 18h et 23h quand il y a plus d'utilisateurs connectés.`);
