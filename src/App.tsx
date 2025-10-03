@@ -1,7 +1,7 @@
 import React from 'react';
 import { AppProvider, useApp } from './context/AppContext';
 import { HomePage } from './components/HomePage';
-import { ChatPage } from './components/ChatPage';
+import { RandomChatPage } from './components/RandomChatPage';
 import { VideoCallPage } from './components/VideoCallPage';
 import { GroupsPage } from './components/GroupsPage';
 import { SettingsPage } from './components/SettingsPage';
@@ -15,7 +15,7 @@ function AppContent() {
       case 'home':
         return <HomePage />;
       case 'chat':
-        return <ChatPage />;
+        return <RandomChatPage />;
       case 'video':
         return <VideoCallPage />;
       case 'groups':

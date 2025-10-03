@@ -1,45 +1,51 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Send, Users, MapPin, ArrowLeft, Plus, Hash, UserPlus, X } from 'lucide-react';
 import { useApp } from '../context/AppContext';
-import { ChatMessage } from '../types';
-import SupabaseService from '../services/SupabaseService';
 import { supabase } from '../lib/supabase';
-import type { Database } from '../lib/supabase';
-
-type GroupRoom = Database['public']['Tables']['groups']['Row'];
+import GroupChatService from '../services/GroupChatService';
+import CookieManager from '../utils/cookieManager';
+import type { Group, GroupMessage } from '../services/GroupChatService';
 
 export function GroupsPage() {
   const { setPage, state } = useApp();
   const [currentView, setCurrentView] = useState<'menu' | 'group'>('menu');
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [messages, setMessages] = useState<GroupMessage[]>([]);
   const [currentMessage, setCurrentMessage] = useState('');
-  const [isSearching, setIsSearching] = useState(false);
   const [isConnected, setIsConnected] = useState(false);
-  const [selectedGroup, setSelectedGroup] = useState<GroupRoom | null>(null);
+  const [selectedGroup, setSelectedGroup] = useState<Group | null>(null);
   const [newGroupName, setNewGroupName] = useState('');
   const [newGroupDescription, setNewGroupDescription] = useState('');
   const [showCreateGroup, setShowCreateGroup] = useState(false);
-  const [userLocation, setUserLocation] = useState<{country: string, city: string} | null>(null);
   const [connectionTime, setConnectionTime] = useState(0);
   const [canAddFriend, setCanAddFriend] = useState(false);
   const [showAddFriend, setShowAddFriend] = useState(false);
-  const [connectedUsers, setConnectedUsers] = useState(0);
-  const [searchAttempts, setSearchAttempts] = useState(0);
-  const [groups, setGroups] = useState<GroupRoom[]>([]);
+  const [memberCount, setMemberCount] = useState(0);
+  const [groups, setGroups] = useState<Group[]>([]);
+  const [currentUserId, setCurrentUserId] = useState('');
+  const [currentUserName, setCurrentUserName] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  
-  const supabaseService = SupabaseService.getInstance();
+  const channelRef = useRef<any>(null);
+
+  const groupChatService = GroupChatService.getInstance();
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
   useEffect(() => {
-    let subscription: any = null;
+    const savedUser = CookieManager.getUser();
+    if (savedUser) {
+      setCurrentUserId(savedUser.user_id);
+      setCurrentUserName(savedUser.pseudo);
+    } else {
+      const newUserId = `group_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
+      setCurrentUserId(newUserId);
+      setCurrentUserName('Anonyme');
+    }
 
     const loadGroups = async () => {
       try {
-        const activeGroups = await supabaseService.getActiveGroups();
+        const activeGroups = await groupChatService.getActiveGroups();
         setGroups(activeGroups);
       } catch (error) {
         console.error('Erreur lors du chargement des groupes:', error);
@@ -47,21 +53,13 @@ export function GroupsPage() {
       }
     };
 
-    const initializeGroups = async () => {
-      await loadGroups();
-      
-      // S'abonner aux changements en temps réel
-      subscription = supabaseService.subscribeToGroups((updatedGroups) => {
-        setGroups(updatedGroups);
-      });
-    };
+    loadGroups();
 
-    initializeGroups();
+    const intervalId = setInterval(loadGroups, 30000);
 
     return () => {
-      if (subscription) {
-        supabase.removeChannel(subscription);
-      }
+      clearInterval(intervalId);
+      groupChatService.cleanup();
     };
   }, []);
 
@@ -138,63 +136,33 @@ export function GroupsPage() {
     }
   }, [isConnected, selectedGroup]);
 
-  const handleConnect = async (group: GroupRoom) => {
-    setIsSearching(true);
-    setSearchAttempts(0);
-    
+  const handleConnect = async (group: Group) => {
+    if (!currentUserId || !currentUserName) return;
+
     try {
-      // Rejoindre le groupe via Supabase
-      const joined = await supabaseService.joinGroup(group.id);
+      console.log('🔗 Connexion au groupe...', group.name);
+
+      const joined = await groupChatService.joinGroup(group.id, currentUserId, currentUserName);
       
       if (!joined) {
         alert('Impossible de rejoindre ce groupe.');
-        setIsSearching(false);
         return;
       }
-      
-      // Simuler la recherche d'utilisateurs dans le groupe
-      let attemptCount = 0;
-      const maxAttempts = 3;
-      
-      while (attemptCount < maxAttempts) {
-        attemptCount++;
-        setSearchAttempts(attemptCount);
-        
-        await new Promise(resolve => setTimeout(resolve, 3000));
-        
-        // Simuler la recherche d'utilisateurs (plus probable dans les groupes)
-        const foundUsers = Math.random() > 0.25; // 75% de chance
-        
-        if (foundUsers) {
-          setIsConnected(true);
-          setConnectionTime(0);
-          setCanAddFriend(false);
-          setConnectedUsers(Math.floor(Math.random() * 8) + 2); // 2-10 utilisateurs
-          setCurrentView('group');
-          setSelectedGroup(group);
-          
-          const welcomeMessage: ChatMessage = {
-            id: Date.now().toString(),
-            userId: 'system',
-            username: 'LiberTalk',
-            message: `Bienvenue dans "${group.name}" ! ${connectedUsers} membres connectés`,
-            timestamp: new Date(),
-            isOwn: false,
-          };
-          
-          setMessages([welcomeMessage]);
-          setSearchAttempts(0);
-          setIsSearching(false);
-          
-          return;
-        }
-      }
-      
-      // Aucun utilisateur trouvé
-      await supabaseService.leaveGroup(group.id);
-      setSearchAttempts(0);
-      setIsSearching(false);
-      alert('Aucun utilisateur disponible dans ce groupe pour le moment.');
+
+      setIsConnected(true);
+      setCurrentView('group');
+      setSelectedGroup(group);
+      setConnectionTime(0);
+      setMemberCount(group.member_count);
+
+      const groupMessages = await groupChatService.getGroupMessages(group.id, 50);
+      setMessages(groupMessages);
+
+      channelRef.current = groupChatService.subscribeToMessages(group.id, (message) => {
+        setMessages(prev => [...prev, message]);
+      });
+
+      console.log('✅ Connecté au groupe!');
       
     } catch (error) {
       console.error('Erreur de connexion au groupe:', error);
@@ -203,20 +171,21 @@ export function GroupsPage() {
     }
   };
 
-  const handleSendMessage = () => {
-    if (!currentMessage.trim() || !isConnected) return;
+  const handleSendMessage = async () => {
+    if (!currentMessage.trim() || !isConnected || !selectedGroup) return;
 
-    const newMessage: ChatMessage = {
-      id: Date.now().toString(),
-      userId: state.user?.id || 'anonymous',
-      username: state.user?.username || 'Anonyme',
-      message: currentMessage.trim(),
-      timestamp: new Date(),
-      isOwn: true,
-    };
-
-    setMessages(prev => [...prev, newMessage]);
-    setCurrentMessage('');
+    try {
+      await groupChatService.sendMessage(
+        selectedGroup.id,
+        currentUserId,
+        currentUserName,
+        currentMessage.trim()
+      );
+      setCurrentMessage('');
+    } catch (error) {
+      console.error('❌ Erreur envoi message:', error);
+      alert('Erreur lors de l\'envoi du message');
+    }
   };
 
   const handleKeyPress = (e: React.KeyboardEvent) => {
@@ -226,61 +195,53 @@ export function GroupsPage() {
     }
   };
 
-  const handleCreateGroup = () => {
+  const handleCreateGroup = async () => {
     if (!newGroupName.trim() || !newGroupDescription.trim()) return;
-    
-    const createGroup = async () => {
-      try {
-        // Vérifier la connexion Supabase avant de créer le groupe
-        const isConnected = await supabaseService.testConnection();
-        if (!isConnected) {
-          throw new Error('Impossible de se connecter à la base de données. Veuillez vérifier votre connexion internet et réessayer.');
-        }
-        
-        const userId = state.user?.id || 'anonymous';
-        const location = userLocation ? `${userLocation.city}, ${userLocation.country}` : undefined;
-        
-        const newGroup = await supabaseService.createGroup(
-          newGroupName.trim(),
-          newGroupDescription.trim(),
-          userId,
-          location
-        );
-        
+    if (!currentUserId || !currentUserName) return;
+
+    try {
+      const newGroup = await groupChatService.createGroup(
+        currentUserId,
+        currentUserName,
+        newGroupName.trim(),
+        newGroupDescription.trim(),
+        'Général'
+      );
+
+      if (newGroup) {
         setShowCreateGroup(false);
         setNewGroupName('');
         setNewGroupDescription('');
-        
-        // Connecter automatiquement au nouveau groupe
-        handleConnect(newGroup);
-        
-      } catch (error) {
-        console.error('Erreur lors de la création du groupe:', error);
-        alert('Erreur lors de la création du groupe. Veuillez réessayer.');
-      }
-    };
 
-    createGroup();
+        setGroups(prev => [newGroup, ...prev]);
+        await handleConnect(newGroup);
+      }
+    } catch (error) {
+      console.error('❌ Erreur création groupe:', error);
+      alert('Erreur lors de la création du groupe');
+    }
   };
 
-  const handleDisconnect = () => {
-    const disconnect = async () => {
-      if (selectedGroup) {
-        await supabaseService.leaveGroup(selectedGroup.id);
+  const handleDisconnect = async () => {
+    try {
+      if (selectedGroup && currentUserId && currentUserName) {
+        await groupChatService.leaveGroup(selectedGroup.id, currentUserId, currentUserName);
       }
-      
+
+      if (channelRef.current) {
+        await channelRef.current.unsubscribe();
+        channelRef.current = null;
+      }
+
       setIsConnected(false);
       setMessages([]);
       setCurrentView('menu');
       setSelectedGroup(null);
       setConnectionTime(0);
-      setCanAddFriend(false);
-      setShowAddFriend(false);
-      setConnectedUsers(0);
-      setSearchAttempts(0);
-    };
-
-    disconnect();
+      setMemberCount(0);
+    } catch (error) {
+      console.error('❌ Erreur déconnexion:', error);
+    }
   };
 
   const getTimeUntilExpiry = (group: GroupRoom) => {
