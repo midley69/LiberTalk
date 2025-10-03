@@ -207,22 +207,21 @@ export function RandomChatPage() {
         if (match && match.is_success) {
           console.log('\u2705 Match trouv\u00e9 ET session cr\u00e9\u00e9e!', match);
 
-          // Cr\u00e9er l'objet session pour l'UI
-          const session: RandomChatSession = {
-            id: match.session_id,
-            user1_id: userId,
-            user1_pseudo: userPseudo,
-            user1_genre: userGenre,
-            user2_id: match.partner_id,
-            user2_pseudo: match.partner_pseudo,
-            user2_genre: match.partner_genre,
-            status: 'active',
-            started_at: new Date().toISOString(),
-            last_activity: new Date().toISOString(),
-            message_count: 0
-          };
+          // Charger la VRAIE session depuis la base pour avoir les bons user1/user2
+          const { data: realSession, error: sessionError } = await supabase
+            .from('random_chat_sessions')
+            .select('*')
+            .eq('id', match.session_id)
+            .maybeSingle();
 
-          setCurrentSession(session);
+          if (sessionError || !realSession) {
+            console.error('\u274c Erreur chargement session:', sessionError);
+            throw sessionError;
+          }
+
+          console.log('\u2705 Session r\u00e9elle charg\u00e9e:', realSession);
+
+          setCurrentSession(realSession as RandomChatSession);
           setCurrentView('chatting');
           setIsSearching(false);
           setLastActivity(new Date());
@@ -435,11 +434,7 @@ export function RandomChatPage() {
     try {
       console.log('⏭️ Passage au suivant...');
       
-      await supabase.rpc('end_random_chat_session', {
-        session_id: currentSession.id,
-        ended_by_user_id: currentUser.user_id,
-        end_reason: 'user_next'
-      });
+      await chatService.endSession(currentSession.id, currentUser.user_id, 'user_next');
 
       // Nettoyer les abonnements
       cleanupSubscriptions();
@@ -451,7 +446,7 @@ export function RandomChatPage() {
       
       // Chercher un nouveau partenaire
       setCurrentView('waiting');
-      searchForPartner(currentUser.user_id);
+      searchForPartner(currentUser.user_id, currentUser.pseudo, currentUser.genre);
       
     } catch (error) {
       console.error('❌ Erreur passage au suivant:', error);
@@ -462,10 +457,11 @@ export function RandomChatPage() {
   const handleQuit = async () => {
     try {
       console.log('🚪 Quitter le chat...');
-      
+
       // Annuler la recherche en cours
-      if (searchTimeoutRef.current) {
-        clearTimeout(searchTimeoutRef.current);
+      if (searchIntervalRef.current) {
+        clearInterval(searchIntervalRef.current);
+        searchIntervalRef.current = null;
       }
       
       // Nettoyer tous les services
@@ -506,9 +502,11 @@ export function RandomChatPage() {
   useEffect(() => {
     return () => {
       cleanupSubscriptions();
-      if (searchTimeoutRef.current) {
-        clearTimeout(searchTimeoutRef.current);
+      if (searchIntervalRef.current) {
+        clearInterval(searchIntervalRef.current);
+        searchIntervalRef.current = null;
       }
+      chatService.cleanup();
     };
   }, []);
 
